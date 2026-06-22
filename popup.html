@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 360px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f8f9fa;
+      color: #1a1a1a;
+    }
+    .header {
+      background: #2563eb;
+      color: white;
+      padding: 14px 16px;
+      font-size: 15px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .header .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #86efac;
+    }
+    .header .status-dot.inactive { background: #fca5a5; }
+    .content { padding: 16px; }
+    .section { margin-bottom: 16px; }
+    .section-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #6b7280;
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+    input, select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      background: white;
+    }
+    input:focus, select:focus { border-color: #2563eb; }
+    .task-card {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .task-label {
+      font-size: 11px;
+      color: #6b7280;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+      font-weight: 600;
+    }
+    .task-prompt {
+      font-size: 14px;
+      line-height: 1.5;
+      color: #1a1a1a;
+    }
+    .task-meta {
+      display: flex;
+      gap: 12px;
+      margin-top: 10px;
+      font-size: 12px;
+      color: #6b7280;
+    }
+    .btn {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-primary { background: #2563eb; color: white; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-success { background: #16a34a; color: white; }
+    .btn-success:hover { background: #15803d; }
+    .btn-danger { background: #dc2626; color: white; }
+    .btn-danger:hover { background: #b91c1c; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-row { display: flex; gap: 8px; }
+    .btn-row .btn { flex: 1; }
+    .setup-form { display: flex; flex-direction: column; gap: 12px; }
+    .progress {
+      font-size: 13px;
+      color: #6b7280;
+      text-align: center;
+      padding: 8px 0;
+    }
+    .tracking-indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #16a34a;
+      margin-top: 10px;
+    }
+    .tracking-indicator .pulse {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #16a34a;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    .done-screen {
+      text-align: center;
+      padding: 24px 16px;
+    }
+    .done-screen h2 { font-size: 18px; margin-bottom: 8px; }
+    .done-screen p { font-size: 14px; color: #6b7280; }
+    .error { color: #dc2626; font-size: 12px; margin-top: 4px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="status-dot" id="statusDot"></div>
+    <span>UI Rater — Task Tracker</span>
+  </div>
+
+  <!-- Setup screen -->
+  <div class="content" id="setupScreen">
+    <div class="setup-form">
+      <div class="section">
+        <div class="section-label">Participant ID</div>
+        <input type="text" id="participantInput" placeholder="e.g. P001">
+      </div>
+      <div class="section">
+        <div class="section-label">Server URL</div>
+        <input type="text" id="serverInput" placeholder="https://ui-rater-production.up.railway.app">
+      </div>
+      <button class="btn btn-primary" id="startBtn">Load Tasks</button>
+      <div class="error hidden" id="setupError"></div>
+    </div>
+  </div>
+
+  <!-- Task screen -->
+  <div class="content hidden" id="taskScreen">
+    <div class="section">
+      <div class="progress" id="progressText"></div>
+    </div>
+    <div class="section">
+      <div class="task-card">
+        <div class="task-label">Current Task</div>
+        <div class="task-prompt" id="taskPrompt"></div>
+        <div class="task-meta">
+          <span id="taskSite"></span>
+        </div>
+      </div>
+    </div>
+    <div id="trackingStatus" class="hidden">
+      <div class="tracking-indicator">
+        <div class="pulse"></div>
+        <span>Tracking interactions…</span>
+      </div>
+    </div>
+    <div class="section" style="margin-top: 12px;">
+      <div id="preTrackBtns" class="btn-row">
+        <button class="btn btn-primary" id="beginTaskBtn">Begin Task</button>
+      </div>
+      <div id="duringTrackBtns" class="btn-row hidden">
+        <button class="btn btn-success" id="doneBtn">Done</button>
+        <button class="btn btn-danger" id="skipBtn">Skip</button>
+      </div>
+    </div>
+    <div class="error hidden" id="taskError"></div>
+  </div>
+
+  <!-- All done screen -->
+  <div class="content hidden" id="doneScreen">
+    <div class="done-screen">
+      <h2>All tasks complete!</h2>
+      <p>Thank you for participating in this study.</p>
+      <button class="btn btn-primary" id="resetBtn" style="margin-top: 16px;">Start Over</button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
