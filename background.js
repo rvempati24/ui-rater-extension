@@ -1,26 +1,31 @@
 const DEFAULT_SERVER = 'https://ui-rater-production.up.railway.app';
 
+let collectedInteractions = [];
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'GET_STATE') {
-    chrome.storage.local.get(['participantId', 'serverUrl', 'tasks', 'currentTaskIndex', 'taskData'], (data) => {
+    chrome.storage.local.get(['participantId', 'serverUrl', 'tasks', 'currentTaskIndex'], (data) => {
       sendResponse(data);
     });
     return true;
   }
 
-  if (msg.type === 'SAVE_INTERACTIONS') {
+  if (msg.type === 'APPEND_INTERACTIONS') {
+    if (Array.isArray(msg.interactions)) {
+      collectedInteractions.push(...msg.interactions);
+    }
+    // Periodic partial save to server
     chrome.storage.local.get(['participantId', 'serverUrl', 'currentTaskIndex', 'tasks'], (data) => {
       if (!data.participantId || !data.tasks) return;
-      const task = data.tasks[data.currentTaskIndex];
       const serverUrl = data.serverUrl || DEFAULT_SERVER;
       fetch(`${serverUrl}/api/partial-save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           participantId: data.participantId,
-          trialIndex: data.currentTaskIndex + 1,
+          trialIndex: (data.currentTaskIndex || 0) + 1,
           view_start: msg.viewStart,
-          interactions: msg.interactions,
+          interactions: collectedInteractions,
         }),
       }).catch(() => {});
     });
@@ -34,21 +39,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
       const serverUrl = data.serverUrl || DEFAULT_SERVER;
+      const allInteractions = [...collectedInteractions];
       try {
         const res = await fetch(`${serverUrl}/api/complete-task`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             participantId: data.participantId,
-            trialIndex: data.currentTaskIndex + 1,
+            trialIndex: (data.currentTaskIndex || 0) + 1,
             view_start: msg.viewStart,
             duration_ms: msg.durationMs,
-            interactions: msg.interactions,
+            interactions: allInteractions,
           }),
         });
         if (!res.ok) throw new Error(`Server error: ${res.status}`);
 
-        const nextIndex = data.currentTaskIndex + 1;
+        collectedInteractions = [];
+
+        const nextIndex = (data.currentTaskIndex || 0) + 1;
         if (nextIndex < data.tasks.length) {
           await chrome.storage.local.set({ currentTaskIndex: nextIndex });
         }
@@ -58,6 +66,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
     });
     return true;
+  }
+
+  if (msg.type === 'CLEAR_INTERACTIONS') {
+    collectedInteractions = [];
+    return false;
   }
 });
 

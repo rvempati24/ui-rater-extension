@@ -9,6 +9,9 @@ let state = {
   currentTaskIndex: 0,
 };
 
+let taskStartTime = 0;
+let taskViewStart = '';
+
 async function init() {
   const data = await chrome.storage.local.get([
     'participantId', 'serverUrl', 'tasks', 'currentTaskIndex',
@@ -51,20 +54,13 @@ function showTask() {
   $('taskPrompt').textContent = task.task_prompt;
   $('taskSite').textContent = task.site_url ? `→ ${task.site_url}` : '';
 
-  // Check if content script is already tracking
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    if (!tabs[0]) return;
-    chrome.tabs.sendMessage(tabs[0].id, { type: 'PING' }, (res) => {
-      if (chrome.runtime.lastError || !res) {
-        showPreTrack();
-        return;
-      }
-      if (res.tracking) {
-        showDuringTrack();
-      } else {
-        showPreTrack();
-      }
-    });
+  // Check if tracking is active (persisted across navigations)
+  chrome.storage.local.get(['_tracking'], (data) => {
+    if (data._tracking) {
+      showDuringTrack();
+    } else {
+      showPreTrack();
+    }
   });
 }
 
@@ -109,7 +105,10 @@ $('startBtn').addEventListener('click', async () => {
 
   try {
     const res = await fetch(`${server}/api/tasks?participantId=${encodeURIComponent(pid)}`);
-    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Server returned ${res.status}`);
+    }
     const data = await res.json();
 
     if (!data.tasks || data.tasks.length === 0) {
@@ -144,43 +143,37 @@ $('startBtn').addEventListener('click', async () => {
 // Begin task — open site and start tracking
 $('beginTaskBtn').addEventListener('click', async () => {
   const task = state.tasks[state.currentTaskIndex];
+  taskStartTime = Date.now();
+  taskViewStart = new Date().toISOString();
 
-  if (task.site_url) {
-    // Open the target website in the current tab
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    await chrome.tabs.update(tab.id, { url: task.site_url });
-    // Wait for the page to load, then inject and start tracking
-    chrome.tabs.onUpdated.addListener(function listener(tabId, info) {
-      if (tabId === tab.id && info.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(listener);
-        setTimeout(() => {
-          chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' }, () => {
-            if (chrome.runtime.lastError) {
-              // Content script might not be injected yet, try programmatic injection
-              chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                files: ['content.js'],
-              }).then(() => {
-                chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' });
-              });
-            }
-          });
-        }, 500);
-      }
-    });
-  } else {
-    // No specific URL — just start tracking the current page
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' }, (res) => {
+  // Clear any leftover interactions from previous task
+  chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+  function startTrackingOnTab(tabId) {
+    chrome.tabs.sendMessage(tabId, { type: 'START_TRACKING' }, (res) => {
       if (chrome.runtime.lastError) {
         chrome.scripting.executeScript({
-          target: { tabId: tab.id },
+          target: { tabId },
           files: ['content.js'],
         }).then(() => {
-          chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' });
+          chrome.tabs.sendMessage(tabId, { type: 'START_TRACKING' });
         });
       }
     });
+  }
+
+  if (task.site_url) {
+    await chrome.tabs.update(tab.id, { url: task.site_url });
+    chrome.tabs.onUpdated.addListener(function listener(tabId, info) {
+      if (tabId === tab.id && info.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(listener);
+        setTimeout(() => startTrackingOnTab(tab.id), 500);
+      }
+    });
+  } else {
+    startTrackingOnTab(tab.id);
   }
 
   showDuringTrack();
@@ -192,19 +185,24 @@ $('doneBtn').addEventListener('click', async () => {
   $('doneBtn').textContent = 'Saving…';
 
   try {
+    // Tell content script to flush remaining interactions and stop
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const res = await new Promise((resolve) => {
-      chrome.tabs.sendMessage(tab.id, { type: 'STOP_TRACKING' }, resolve);
-    });
+    try {
+      await new Promise((resolve) => {
+        chrome.tabs.sendMessage(tab.id, { type: 'STOP_TRACKING' }, () => resolve());
+        setTimeout(resolve, 1000);
+      });
+    } catch { /* content script may be on a different page */ }
 
-    if (!res) throw new Error('Could not reach content script.');
+    // Small delay to let the flush arrive at background
+    await new Promise(r => setTimeout(r, 300));
 
+    const durationMs = Date.now() - taskStartTime;
     const result = await new Promise((resolve) => {
       chrome.runtime.sendMessage({
         type: 'COMPLETE_TASK',
-        interactions: res.interactions,
-        viewStart: res.viewStart,
-        durationMs: res.durationMs,
+        viewStart: taskViewStart,
+        durationMs,
       }, resolve);
     });
 
@@ -229,7 +227,10 @@ $('doneBtn').addEventListener('click', async () => {
 // Skip task
 $('skipBtn').addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  chrome.tabs.sendMessage(tab.id, { type: 'STOP_TRACKING' }, () => {});
+  try {
+    chrome.tabs.sendMessage(tab.id, { type: 'STOP_TRACKING' });
+  } catch { /* ignore */ }
+  chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
 
   state.currentTaskIndex++;
   await chrome.storage.local.set({ currentTaskIndex: state.currentTaskIndex });
@@ -243,7 +244,8 @@ $('skipBtn').addEventListener('click', async () => {
 
 // Reset
 $('resetBtn').addEventListener('click', async () => {
-  await chrome.storage.local.remove(['participantId', 'tasks', 'currentTaskIndex']);
+  await chrome.storage.local.remove(['participantId', 'tasks', 'currentTaskIndex', '_tracking', '_originTime', '_viewStart']);
+  chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
   state = { participantId: '', serverUrl: state.serverUrl, tasks: null, currentTaskIndex: 0 };
   showSetup();
 });
