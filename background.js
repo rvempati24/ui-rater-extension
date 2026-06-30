@@ -33,13 +33,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'COMPLETE_TASK') {
-    chrome.storage.local.get(['participantId', 'serverUrl', 'currentTaskIndex', 'tasks'], async (data) => {
+    chrome.storage.local.get(['participantId', 'serverUrl', 'currentTaskIndex', 'tasks', '_originTime', '_viewStart'], async (data) => {
       if (!data.participantId || !data.tasks) {
         sendResponse({ ok: false, error: 'Not configured' });
         return;
       }
       const serverUrl = data.serverUrl || DEFAULT_SERVER;
       const allInteractions = [...collectedInteractions];
+      const viewStart = data._viewStart || msg.viewStart;
+      const durationMs = data._originTime ? Date.now() - data._originTime : (msg.durationMs || 0);
       try {
         const res = await fetch(`${serverUrl}/api/complete-task`, {
           method: 'POST',
@@ -47,8 +49,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           body: JSON.stringify({
             participantId: data.participantId,
             trialIndex: (data.currentTaskIndex || 0) + 1,
-            view_start: msg.viewStart,
-            duration_ms: msg.durationMs,
+            view_start: viewStart,
+            duration_ms: durationMs,
             interactions: allInteractions,
           }),
         });
