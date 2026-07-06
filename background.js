@@ -1,6 +1,49 @@
 const DEFAULT_SERVER = 'https://ui-rater-production.up.railway.app';
 
 let collectedInteractions = [];
+let recordingTabId = null;
+
+async function ensureOffscreen() {
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ['OFFSCREEN_DOCUMENT'],
+  });
+  if (contexts.length === 0) {
+    await chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['USER_MEDIA'],
+      justification: 'Recording tab video for the study',
+    });
+  }
+}
+
+async function startRecording(tabId) {
+  await ensureOffscreen();
+  const streamId = await new Promise((resolve, reject) => {
+    chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (id) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(id);
+    });
+  });
+  recordingTabId = tabId;
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: 'START_RECORDING', streamId }, (res) => {
+      if (res?.ok) resolve();
+      else reject(new Error(res?.error || 'Failed to start recording'));
+    });
+  });
+}
+
+async function stopRecording() {
+  recordingTabId = null;
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: 'STOP_RECORDING' }, (res) => {
+      resolve(res?.blobUrl || null);
+    });
+  });
+}
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'GET_STATE') {
@@ -14,7 +57,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (Array.isArray(msg.interactions)) {
       collectedInteractions.push(...msg.interactions);
     }
-    // Periodic partial save to server
     chrome.storage.local.get(['participantId', 'serverUrl', 'currentTaskIndex', 'tasks'], (data) => {
       if (!data.participantId || !data.tasks) return;
       const serverUrl = data.serverUrl || DEFAULT_SERVER;
@@ -32,6 +74,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
 
+  if (msg.type === 'BEGIN_TASK') {
+    (async () => {
+      try {
+        await startRecording(msg.tabId);
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
   if (msg.type === 'COMPLETE_TASK') {
     chrome.storage.local.get(['participantId', 'serverUrl', 'currentTaskIndex', 'tasks', '_originTime', '_viewStart'], async (data) => {
       if (!data.participantId || !data.tasks) {
@@ -42,13 +96,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const allInteractions = [...collectedInteractions];
       const viewStart = data._viewStart || msg.viewStart;
       const durationMs = data._originTime ? Date.now() - data._originTime : (msg.durationMs || 0);
+      const taskIndex = (data.currentTaskIndex || 0) + 1;
+      const participantId = data.participantId;
+
+      // Stop recording and download video
+      const blobUrl = await stopRecording();
+      if (blobUrl) {
+        chrome.downloads.download({
+          url: blobUrl,
+          filename: `ui-rater-recordings/${participantId}_task${taskIndex}.webm`,
+          saveAs: false,
+        });
+      }
+
       try {
         const res = await fetch(`${serverUrl}/api/complete-task`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            participantId: data.participantId,
-            trialIndex: (data.currentTaskIndex || 0) + 1,
+            participantId,
+            trialIndex: taskIndex,
             view_start: viewStart,
             duration_ms: durationMs,
             interactions: allInteractions,
@@ -58,7 +125,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         collectedInteractions = [];
 
-        const nextIndex = (data.currentTaskIndex || 0) + 1;
+        const nextIndex = taskIndex;
         if (nextIndex < data.tasks.length) {
           await chrome.storage.local.set({ currentTaskIndex: nextIndex });
         }
@@ -70,10 +137,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'SKIP_TASK') {
+    (async () => {
+      await stopRecording();
+    })();
+    return false;
+  }
+
   if (msg.type === 'CLEAR_INTERACTIONS') {
     collectedInteractions = [];
     return false;
   }
+
+  // Messages from offscreen (START_RECORDING, STOP_RECORDING) are handled by offscreen.js
 });
 
 chrome.runtime.onInstalled.addListener(() => {

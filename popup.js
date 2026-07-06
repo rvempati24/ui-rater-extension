@@ -137,31 +137,33 @@ $('startBtn').addEventListener('click', async () => {
   }
 });
 
-// Begin task — open site and start tracking
+// Begin task — open site, start recording and tracking
 $('beginTaskBtn').addEventListener('click', async () => {
   const task = state.tasks[state.currentTaskIndex];
   const now = Date.now();
   const viewStart = new Date().toISOString();
 
-  // Persist tracking state BEFORE navigating — so reopening the popup
-  // sees tracking as active even if the content script hasn't loaded yet
+  // Persist tracking state BEFORE navigating
   await chrome.storage.local.set({
     _tracking: true,
     _originTime: now,
     _viewStart: viewStart,
   });
 
-  // Clear any leftover interactions from previous task
   chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
+  // Start tab video recording
+  chrome.runtime.sendMessage({ type: 'BEGIN_TASK', tabId: tab.id }, (res) => {
+    if (chrome.runtime.lastError || !res?.ok) {
+      console.warn('Recording failed to start:', res?.error || chrome.runtime.lastError?.message);
+    }
+  });
+
   if (task.site_url) {
     await chrome.tabs.update(tab.id, { url: task.site_url });
-    // Content script will auto-resume tracking when it loads
-    // because _tracking is already true in storage
   } else {
-    // No URL — start tracking on current page
     chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' }, (res) => {
       if (chrome.runtime.lastError) {
         chrome.scripting.executeScript({
@@ -235,6 +237,7 @@ $('skipBtn').addEventListener('click', async () => {
   try {
     chrome.tabs.sendMessage(tab.id, { type: 'STOP_TRACKING' });
   } catch { /* ignore */ }
+  chrome.runtime.sendMessage({ type: 'SKIP_TASK' });
   chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
   await chrome.storage.local.remove(['_tracking', '_originTime', '_viewStart']);
 
