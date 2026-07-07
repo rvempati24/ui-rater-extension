@@ -87,15 +87,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'COMPLETE_TASK') {
-    chrome.storage.local.get(['participantId', 'serverUrl', 'currentTaskIndex', 'tasks', '_originTime', '_viewStart'], async (data) => {
+    chrome.storage.local.get(['participantId', 'serverUrl', 'currentTaskIndex', 'tasks'], async (data) => {
       if (!data.participantId || !data.tasks) {
         sendResponse({ ok: false, error: 'Not configured' });
         return;
       }
       const serverUrl = data.serverUrl || DEFAULT_SERVER;
       const allInteractions = [...collectedInteractions];
-      const viewStart = data._viewStart || msg.viewStart;
-      const durationMs = data._originTime ? Date.now() - data._originTime : (msg.durationMs || 0);
+      const viewStart = msg.viewStart;
+      const durationMs = msg.durationMs || 0;
       const taskIndex = (data.currentTaskIndex || 0) + 1;
       const participantId = data.participantId;
 

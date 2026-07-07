@@ -62,9 +62,10 @@
 
   function onInput(e) {
     const el = e.target;
+    const value = el.value || el.textContent || el.innerText || '';
     record('input', e, {
-      value: (el.value || '').slice(0, 200),
-      inputType: el.type || 'text',
+      value: value.slice(0, 200),
+      inputType: el.type || (el.isContentEditable ? 'contenteditable' : 'text'),
     });
   }
 
