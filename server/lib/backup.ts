@@ -2,7 +2,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { uploadToDrive } from './gdrive';
 
-const DATA_DIR     = path.join(process.cwd(), 'data');
+const DATA_DIR     = path.join(process.cwd(), '..', 'data');
 const RESULTS_PATH = path.join(DATA_DIR, 'results.json');
 const BACKUP_DIR   = path.join(DATA_DIR, 'backups');
 

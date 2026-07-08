@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import fs from 'fs/promises';
 import path from 'path';
 
-const RESULTS_PATH = path.join(process.cwd(), 'data', 'results.json');
+const RESULTS_PATH = path.join(process.cwd(), '..', 'data', 'results.json');
 const TMP_PATH = RESULTS_PATH + '.tmp';
 
 export async function POST() {

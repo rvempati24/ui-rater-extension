@@ -71,10 +71,10 @@ Tasks are sourced from the [Mind2Web](https://github.com/OSU-NLP-Group/Mind2Web)
 
 ## Returning Your Data
 
-When all tasks are complete, send the following files to the research team:
+When all tasks are complete, send the `data/` folder to the research team. It contains:
 
-1. **Interaction data**: `server/data/results.json`
-2. **Task recordings**: `~/Downloads/ui-rater-recordings/` (one `.webm` video per task)
+1. **Interaction data**: `data/results.json`
+2. **Task recordings**: `data/recordings/` (one `.webm` video per task, e.g., `P001_task1.webm`)
 
 ## What Is Collected
 
@@ -99,7 +99,7 @@ All timestamps are relative to task start (timestamp 0 = clicked "Begin Task").
 
 ### Video Recording
 
-Each task is recorded as a `.webm` video file capturing the browser tab contents. Videos are saved automatically to `~/Downloads/ui-rater-recordings/` when a task is completed. Video is recorded at 1.5 Mbps.
+Each task is recorded as a `.webm` video file capturing the browser tab contents. Videos are saved automatically to `data/recordings/` when a task is completed (e.g., `P001_task1.webm`). Video is recorded at 1.5 Mbps.
 
 ### What Is NOT Collected
 
@@ -160,14 +160,17 @@ ui-rater-extension/
 ├── popup.html/js          Participant-facing UI for task management
 │
 └── server/                Local data server (Next.js)
-    ├── app/api/            REST endpoints for receiving interaction data
-    │   ├── tasks/          GET — returns task list for participant
-    │   ├── complete-task/  POST — saves completed task data
-    │   └── partial-save/   POST — periodic saves during task
-    └── data/
-        ├── results.json         Output file (send this back)
-        ├── trials-config.json   Task definitions
-        └── participants.json    Valid participant IDs
+    └── app/api/               REST endpoints for receiving data
+        ├── tasks/             GET — returns task list for participant
+        ├── complete-task/     POST — saves completed task data
+        ├── partial-save/      POST — periodic saves during task
+        └── upload-recording/  POST — receives video recordings
+
+└── data/                      All study output (send this folder back)
+    ├── results.json           Interaction traces
+    ├── recordings/            Task videos, e.g. P001_task1.webm
+    ├── trials-config.json     Task definitions
+    └── participants.json      Valid participant IDs
 ```
 
 All processing happens locally. The only network traffic is between the participant's browser and the real websites they visit during tasks.

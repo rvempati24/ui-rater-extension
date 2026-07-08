@@ -7,7 +7,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'STOP_RECORDING') {
-    stopRecording().then(blobUrl => sendResponse({ blobUrl })).catch(e => sendResponse({ error: e.message }));
+    stopRecording(msg.serverUrl, msg.participantId, msg.taskIndex)
+      .then((result) => sendResponse(result))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
   }
 });
@@ -36,20 +38,31 @@ async function startRecording(streamId) {
   recorder.start(1000);
 }
 
-async function stopRecording() {
-  if (!recorder || recorder.state === 'inactive') return null;
+async function stopRecording(serverUrl, participantId, taskIndex) {
+  if (!recorder || recorder.state === 'inactive') return { ok: false, error: 'Not recording' };
 
   return new Promise((resolve) => {
-    recorder.onstop = () => {
+    recorder.onstop = async () => {
       const blob = new Blob(chunks, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
       chunks = [];
 
-      // Stop all tracks
       recorder.stream.getTracks().forEach(t => t.stop());
       recorder = null;
 
-      resolve(url);
+      if (serverUrl && participantId && taskIndex) {
+        try {
+          const res = await fetch(
+            `${serverUrl}/api/upload-recording?participantId=${participantId}&taskIndex=${taskIndex}`,
+            { method: 'POST', body: blob }
+          );
+          if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+          resolve({ ok: true });
+        } catch (err) {
+          resolve({ ok: false, error: err.message });
+        }
+      } else {
+        resolve({ ok: false, error: 'Missing upload params' });
+      }
     };
     recorder.stop();
   });

@@ -36,11 +36,16 @@ async function startRecording(tabId) {
   });
 }
 
-async function stopRecording() {
+async function stopRecording(serverUrl, participantId, taskIndex) {
   recordingTabId = null;
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: 'STOP_RECORDING' }, (res) => {
-      resolve(res?.blobUrl || null);
+    chrome.runtime.sendMessage({
+      type: 'STOP_RECORDING',
+      serverUrl,
+      participantId,
+      taskIndex,
+    }, (res) => {
+      resolve(res?.ok || false);
     });
   });
 }
@@ -99,15 +104,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const taskIndex = (data.currentTaskIndex || 0) + 1;
       const participantId = data.participantId;
 
-      // Stop recording and download video
-      const blobUrl = await stopRecording();
-      if (blobUrl) {
-        chrome.downloads.download({
-          url: blobUrl,
-          filename: `ui-rater-recordings/${participantId}_task${taskIndex}.webm`,
-          saveAs: false,
-        });
-      }
+      // Stop recording and upload video to server
+      await stopRecording(serverUrl, participantId, taskIndex);
 
       try {
         const res = await fetch(`${serverUrl}/api/complete-task`, {
@@ -139,7 +137,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'SKIP_TASK') {
     (async () => {
-      await stopRecording();
+      chrome.storage.local.get(['serverUrl', 'participantId', 'currentTaskIndex'], async (data) => {
+        const taskIndex = (data.currentTaskIndex || 0) + 1;
+        await stopRecording(data.serverUrl || DEFAULT_SERVER, data.participantId, taskIndex);
+      });
     })();
     return false;
   }
@@ -148,8 +149,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     collectedInteractions = [];
     return false;
   }
-
-  // Messages from offscreen (START_RECORDING, STOP_RECORDING) are handled by offscreen.js
 });
 
 chrome.runtime.onInstalled.addListener(() => {

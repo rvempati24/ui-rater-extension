@@ -3,7 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 
 const INIT_PATH = path.join('/app', 'data-init', 'participants.json');
-const LIVE_PATH = path.join(process.cwd(), 'data', 'participants.json');
+const LIVE_PATH = path.join(process.cwd(), '..', 'data', 'participants.json');
 const TMP_PATH  = LIVE_PATH + '.tmp';
 
 export async function POST() {
