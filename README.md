@@ -11,26 +11,28 @@ Chrome extension that tracks user interactions and records video while participa
 
 ## Setup
 
-### 1. Clone and start the local server
+### 1. Clone the repository
 
 ```bash
-git clone https://github.com/rvempati24/UI-rater.git
-cd UI-rater
+git clone https://github.com/rvempati24/ui-rater-extension.git
+cd ui-rater-extension
+```
+
+### 2. Start the local server
+
+```bash
+cd server
 npm install
 npm run dev
 ```
 
-The server runs at `http://localhost:3000` and stores all data locally in `data/results.json`. No data is sent to any remote server.
+The server runs at `http://localhost:3000` and stores all data locally in `server/data/results.json`. No data is sent to any remote server.
 
-### 2. Install the Chrome extension
-
-```bash
-git clone https://github.com/rvempati24/ui-rater-extension.git
-```
+### 3. Install the Chrome extension
 
 1. Open Chrome and go to `chrome://extensions/`
 2. Enable **Developer mode** (top-right toggle)
-3. Click **Load unpacked** and select the `ui-rater-extension` folder
+3. Click **Load unpacked** and select the `ui-rater-extension` folder (the root of the repo, not the `server` subfolder)
 4. Pin the extension icon in the toolbar for easy access
 
 ## Completing the Study
@@ -65,13 +67,13 @@ Repeat until all 10 tasks are complete.
 | 9 | ESPN | Find the current NBA standings for the Western Conference |
 | 10 | Coursera | Search for free machine learning courses from Stanford University |
 
-Participants interact with the actual production websites. The extension does not modify or interfere with any website's functionality.
+Tasks are sourced from the [Mind2Web](https://github.com/OSU-NLP-Group/Mind2Web) benchmark. Participants interact with actual production websites. The extension does not modify or interfere with any website's functionality.
 
 ## Returning Your Data
 
 When all tasks are complete, send the following files to the research team:
 
-1. **Interaction data**: `UI-rater/data/results.json`
+1. **Interaction data**: `server/data/results.json`
 2. **Task recordings**: `~/Downloads/ui-rater-recordings/` (one `.webm` video per task)
 
 ## What Is Collected
@@ -97,7 +99,7 @@ All timestamps are relative to task start (timestamp 0 = clicked "Begin Task").
 
 ### Video Recording
 
-Each task is recorded as a `.webm` video file capturing the browser tab contents. Videos are saved automatically to the `Downloads/ui-rater-recordings/` folder when a task is completed. Video is recorded at 1.5 Mbps.
+Each task is recorded as a `.webm` video file capturing the browser tab contents. Videos are saved automatically to `~/Downloads/ui-rater-recordings/` when a task is completed. Video is recorded at 1.5 Mbps.
 
 ### What Is NOT Collected
 
@@ -118,8 +120,8 @@ The `results.json` file contains one entry per participant with an array of 10 t
     "trials": [
       {
         "index": 1,
-        "slug": "doordash",
-        "task_prompt": "Find a pizza restaurant near you and add a medium pepperoni pizza to your cart",
+        "slug": "united",
+        "task_prompt": "Search for a one-way flight from New York to Los Angeles on January 15th for 1 adult in economy class",
         "completed": true,
         "timestamp": "2026-07-03T14:32:01.000Z",
         "view_start": "2026-07-03T14:30:15.000Z",
@@ -128,9 +130,9 @@ The `results.json` file contains one entry per participant with an array of 10 t
           {
             "kind": "click",
             "ts": 5300,
-            "url": "https://www.doordash.com/",
+            "url": "https://www.united.com/",
             "tag": "button.submit-btn",
-            "text": "Add to cart",
+            "text": "Search flights",
             "x": 340,
             "y": 512
           }
@@ -144,34 +146,32 @@ The `results.json` file contains one entry per participant with an array of 10 t
 ## Architecture
 
 ```
-Chrome Extension
-├── content.js          Injected into each page, captures DOM events
-│                       Persists tracking state in chrome.storage.local
-│                       Flushes events to background worker every 10s
+ui-rater-extension/
+├── manifest.json          Manifest V3 config
+├── content.js             Injected into each page, captures DOM events
+│                          Persists tracking state in chrome.storage.local
+│                          Flushes events to background worker every 10s
+├── background.js          Accumulates interactions across page navigations
+│                          Manages tab capture and offscreen recording
+│                          Sends data to local server on task completion
+│                          Downloads recorded video via chrome.downloads
+├── offscreen.html/js      Records tab MediaStream using MediaRecorder API
+│                          Produces WebM video blobs
+├── popup.html/js          Participant-facing UI for task management
 │
-├── background.js       Accumulates interactions across page navigations
-│                       Manages tab capture and offscreen recording
-│                       Sends data to local server on task completion
-│                       Downloads recorded video via chrome.downloads
-│
-├── offscreen.html/js   Records tab MediaStream using MediaRecorder API
-│                       Produces WebM video blobs
-│
-├── popup.html/js       Participant-facing UI for loading tasks,
-│                       starting/stopping tracking, and navigation
-│
-└── manifest.json       Manifest V3, permissions: storage, tabs,
-                        tabCapture, offscreen, downloads, scripting
-
-Local Server (localhost:3000)
-└── POST /api/complete-task    Receives interaction data
-    POST /api/partial-save     Periodic saves during task (every 10s)
-    GET  /api/tasks            Returns task list for participant
-    Writes to data/results.json on disk
+└── server/                Local data server (Next.js)
+    ├── app/api/            REST endpoints for receiving interaction data
+    │   ├── tasks/          GET — returns task list for participant
+    │   ├── complete-task/  POST — saves completed task data
+    │   └── partial-save/   POST — periodic saves during task
+    └── data/
+        ├── results.json         Output file (send this back)
+        ├── trials-config.json   Task definitions
+        └── participants.json    Valid participant IDs
 ```
 
 All processing happens locally. The only network traffic is between the participant's browser and the real websites they visit during tasks.
 
 ## Estimated Time
 
-10 tasks, approximately 2–5 minutes each. Total session: 20–45 minutes.
+10 tasks, approximately 2–5 minutes each. Total session: 25–50 minutes.
