@@ -48,21 +48,22 @@ For each task:
 4. Click the extension icon again and click **Done** to submit
 5. To skip a task, click **Skip** instead
 
-Repeat until all 9 tasks are complete.
+Repeat until all 10 tasks are complete.
 
 ## Tasks
 
 | # | Website | Task |
 |---|---------|------|
-| 1 | DoorDash | Find a pizza restaurant and add a medium pepperoni pizza to cart |
-| 2 | United Airlines | Search for a one-way flight from SFO to Chicago on Dec 18 |
-| 3 | Airbnb | Search for stays in Paris, Jul 1–5, 2 adults, filter under $150/night |
-| 4 | Gmail | Compose an email to test@example.com with subject "Meeting Notes", then discard |
-| 5 | OpenTable | Search for a restaurant in SF for 4 on a Friday evening, view menu |
-| 6 | LinkedIn | Search for Software Engineer jobs in SF and save one |
-| 7 | Uber | Get a price estimate from SFO to downtown SF |
-| 8 | Upwork | Search for a freelance React developer and view their profile |
-| 9 | Zillow | Search for homes in SF under $750K with 2+ bedrooms, view a listing |
+| 1 | United Airlines | Search for a one-way flight from NYC to LA on Jan 15 for 1 adult in economy |
+| 2 | Booking.com | Search for hotels in Paris for 2 adults, Jan 10–15 |
+| 3 | Amazon | Search for wireless noise-canceling headphones under $100 with 4+ star rating |
+| 4 | Target | Search for a queen-size bed frame under $300, filter by 4+ star rating |
+| 5 | OpenTable | Find Italian restaurants in SF for 4 people this Saturday at 7 PM |
+| 6 | AllTrails | Find best-rated moderate difficulty hiking trails near Denver, CO |
+| 7 | Zillow | Search for houses in Austin, TX with 3+ bedrooms under $500K |
+| 8 | Indeed | Search for remote software engineer jobs with salary above $120K |
+| 9 | ESPN | Find the current NBA standings for the Western Conference |
+| 10 | Coursera | Search for free machine learning courses from Stanford University |
 
 Participants interact with the actual production websites. The extension does not modify or interfere with any website's functionality.
 
@@ -109,7 +110,7 @@ Each task is recorded as a `.webm` video file capturing the browser tab contents
 
 ## Data Format
 
-The `results.json` file contains one entry per participant with an array of 9 trials:
+The `results.json` file contains one entry per participant with an array of 10 trials:
 
 ```json
 {
@@ -173,4 +174,4 @@ All processing happens locally. The only network traffic is between the particip
 
 ## Estimated Time
 
-9 tasks, approximately 2–5 minutes each. Total session: 20–45 minutes.
+10 tasks, approximately 2–5 minutes each. Total session: 20–45 minutes.
