@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs/promises';
-import path from 'path';
 import { ResultsStore } from '@/types';
-
-const RESULTS_PATH = path.join(process.cwd(), '..', 'data', 'results.json');
+import { RESULTS_PATH } from '@/lib/paths';
 
 export async function GET() {
   const raw = await fs.readFile(RESULTS_PATH, 'utf-8');

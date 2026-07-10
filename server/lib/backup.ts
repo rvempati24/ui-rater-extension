@@ -1,10 +1,7 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { uploadToDrive } from './gdrive';
-
-const DATA_DIR     = path.join(process.cwd(), '..', 'data');
-const RESULTS_PATH = path.join(DATA_DIR, 'results.json');
-const BACKUP_DIR   = path.join(DATA_DIR, 'backups');
+import { RESULTS_PATH, BACKUPS_DIR } from './paths';
 
 /**
  * Called once a participant submits their final comparison vote.
@@ -14,10 +11,10 @@ const BACKUP_DIR   = path.join(DATA_DIR, 'backups');
  */
 export async function backupOnCompletion(participantId: string): Promise<void> {
   try {
-    await fs.mkdir(BACKUP_DIR, { recursive: true });
+    await fs.mkdir(BACKUPS_DIR, { recursive: true });
     const ts       = new Date().toISOString().replace(/[:.]/g, '-');
     const filename = `results_${participantId}_${ts}.json`;
-    const dest     = path.join(BACKUP_DIR, filename);
+    const dest     = path.join(BACKUPS_DIR, filename);
     await fs.copyFile(RESULTS_PATH, dest);
     console.log(`[backup] ${participantId} complete → ${dest}`);
 

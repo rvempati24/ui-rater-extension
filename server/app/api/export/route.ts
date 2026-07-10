@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs/promises';
-import path from 'path';
-
-const RESULTS_PATH = path.join(process.cwd(), '..', 'data', 'results.json');
+import { RESULTS_PATH } from '@/lib/paths';
 
 export async function GET() {
   try {

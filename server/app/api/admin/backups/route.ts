@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs/promises';
 import path from 'path';
-
-const BACKUPS_DIR = path.join(process.cwd(), '..', 'data', 'backups');
+import { BACKUPS_DIR } from '@/lib/paths';
 
 export async function GET() {
   try {

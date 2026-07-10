@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
 import fs from 'fs/promises';
+import { RECORDINGS_DIR } from '@/lib/paths';
 
 export async function POST(req: NextRequest) {
   const participantId = req.nextUrl.searchParams.get('participantId');
@@ -10,7 +11,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing participantId or taskIndex' }, { status: 400 });
   }
 
-  const recordingsDir = path.join(process.cwd(), '..', 'data', 'recordings');
+  const recordingsDir = RECORDINGS_DIR;
   await fs.mkdir(recordingsDir, { recursive: true });
 
   const filename = `${participantId}_task${taskIndex}.webm`;

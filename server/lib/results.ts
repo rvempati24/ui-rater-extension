@@ -1,8 +1,7 @@
-import path from 'path';
 import fs from 'fs/promises';
 import { Trial, ResultsStore } from '@/types';
+import { RESULTS_PATH } from './paths';
 
-const RESULTS_PATH = path.join(process.cwd(), '..', 'data', 'results.json');
 const TMP_PATH = RESULTS_PATH + '.tmp';
 
 async function readResults(): Promise<ResultsStore> {

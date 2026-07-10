@@ -1,8 +1,6 @@
-import path from 'path';
 import fs from 'fs/promises';
 import { TrialConfigEntry } from '@/types';
-
-const TRIALS_CONFIG_PATH = path.join(process.cwd(), '..', 'data', 'trials-config.json');
+import { TRIALS_CONFIG_PATH } from './paths';
 
 let _cache: TrialConfigEntry[] | null = null;
 
