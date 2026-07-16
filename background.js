@@ -101,6 +101,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const allInteractions = [...collectedInteractions];
       const viewStart = msg.viewStart;
       const durationMs = msg.durationMs || 0;
+      const feedback = msg.feedback || '';
       const taskIndex = (data.currentTaskIndex || 0) + 1;
       const participantId = data.participantId;
 
@@ -117,6 +118,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             view_start: viewStart,
             duration_ms: durationMs,
             interactions: allInteractions,
+            feedback,
           }),
         });
         if (!res.ok) throw new Error(`Server error: ${res.status}`);

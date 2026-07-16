@@ -4,7 +4,7 @@ import { InteractionEvent } from '@/types';
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { participantId, trialIndex, view_start, duration_ms, interactions } = body;
+  const { participantId, trialIndex, view_start, duration_ms, interactions, feedback } = body;
 
   if (!participantId || typeof participantId !== 'string') {
     return NextResponse.json({ error: 'Missing participantId' }, { status: 400 });
@@ -32,6 +32,9 @@ export async function POST(req: NextRequest) {
       }
       if (Array.isArray(interactions)) {
         trial.interactions = interactions as InteractionEvent[];
+      }
+      if (typeof feedback === 'string' && feedback.trim()) {
+        trial.feedback = feedback.trim();
       }
     });
 

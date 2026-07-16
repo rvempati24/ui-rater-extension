@@ -42,6 +42,7 @@ export interface Trial {
   view_start: string | null;
   duration_ms: number | null;
   interactions: InteractionEvent[];
+  feedback: string | null;
 }
 
 export interface AppEntry {

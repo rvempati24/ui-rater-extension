@@ -122,6 +122,25 @@
     }
     .done-screen h2 { font-size: 18px; margin-bottom: 8px; }
     .done-screen p { font-size: 14px; color: #6b7280; }
+    .feedback-area {
+      width: 100%;
+      min-height: 80px;
+      padding: 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: inherit;
+      resize: vertical;
+      outline: none;
+      background: white;
+    }
+    .feedback-area:focus { border-color: #2563eb; }
+    .feedback-area::placeholder { color: #9ca3af; }
+    .feedback-hint {
+      font-size: 11px;
+      color: #9ca3af;
+      margin-top: 4px;
+    }
     .error { color: #dc2626; font-size: 12px; margin-top: 4px; }
     .hidden { display: none; }
   </style>
@@ -178,6 +197,24 @@
       </div>
     </div>
     <div class="error hidden" id="taskError"></div>
+  </div>
+
+  <!-- Feedback screen (shown after completing a task) -->
+  <div class="content hidden" id="feedbackScreen">
+    <div class="section">
+      <div class="progress" id="feedbackProgress"></div>
+    </div>
+    <div class="section">
+      <div class="section-label">Task Feedback (optional)</div>
+      <textarea class="feedback-area" id="feedbackInput" placeholder="Did you encounter any usability problems? Was anything confusing, hard to find, or frustrating?"></textarea>
+      <div class="feedback-hint">Note any issues you ran into while completing this task.</div>
+    </div>
+    <div class="section" style="margin-top: 4px;">
+      <div class="btn-row">
+        <button class="btn btn-primary" id="submitFeedbackBtn">Continue</button>
+        <button class="btn" id="skipFeedbackBtn" style="background: #e5e7eb; color: #374151;">Skip</button>
+      </div>
+    </div>
   </div>
 
   <!-- All done screen -->

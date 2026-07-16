@@ -35,6 +35,7 @@ async function init() {
 function showSetup() {
   $('setupScreen').classList.remove('hidden');
   $('taskScreen').classList.add('hidden');
+  $('feedbackScreen').classList.add('hidden');
   $('doneScreen').classList.add('hidden');
   $('statusDot').classList.add('inactive');
 }
@@ -42,6 +43,7 @@ function showSetup() {
 function showTask() {
   $('setupScreen').classList.add('hidden');
   $('taskScreen').classList.remove('hidden');
+  $('feedbackScreen').classList.add('hidden');
   $('doneScreen').classList.add('hidden');
   $('statusDot').classList.remove('inactive');
 
@@ -73,9 +75,20 @@ function showDuringTrack() {
   $('trackingStatus').classList.remove('hidden');
 }
 
+function showFeedback() {
+  $('setupScreen').classList.add('hidden');
+  $('taskScreen').classList.add('hidden');
+  $('feedbackScreen').classList.remove('hidden');
+  $('doneScreen').classList.add('hidden');
+  $('feedbackInput').value = '';
+  $('feedbackProgress').textContent =
+    `Task ${state.currentTaskIndex + 1} of ${state.tasks.length} — completed`;
+}
+
 function showDone() {
   $('setupScreen').classList.add('hidden');
   $('taskScreen').classList.add('hidden');
+  $('feedbackScreen').classList.add('hidden');
   $('doneScreen').classList.remove('hidden');
   $('statusDot').classList.add('inactive');
 }
@@ -179,10 +192,10 @@ $('beginTaskBtn').addEventListener('click', async () => {
   showDuringTrack();
 });
 
-// Done — stop tracking and submit
+// Done — stop tracking and show feedback screen
 $('doneBtn').addEventListener('click', async () => {
   $('doneBtn').disabled = true;
-  $('doneBtn').textContent = 'Saving…';
+  $('doneBtn').textContent = 'Stopping…';
 
   try {
     // Tell content script to flush remaining interactions and stop
@@ -197,7 +210,23 @@ $('doneBtn').addEventListener('click', async () => {
     // Small delay to let the flush arrive at background
     await new Promise(r => setTimeout(r, 300));
 
-    // Read timing from storage (persisted by Begin Task)
+    // Show feedback screen before submitting
+    showFeedback();
+  } catch (err) {
+    showError('taskError', err.message);
+  } finally {
+    $('doneBtn').disabled = false;
+    $('doneBtn').textContent = 'Done';
+  }
+});
+
+// Submit feedback and complete task
+async function submitTaskWithFeedback(feedback) {
+  $('submitFeedbackBtn').disabled = true;
+  $('skipFeedbackBtn').disabled = true;
+  $('submitFeedbackBtn').textContent = 'Saving…';
+
+  try {
     const stored = await chrome.storage.local.get(['_originTime', '_viewStart']);
     const durationMs = Date.now() - (stored._originTime || Date.now());
     const viewStart = stored._viewStart || new Date().toISOString();
@@ -207,6 +236,7 @@ $('doneBtn').addEventListener('click', async () => {
         type: 'COMPLETE_TASK',
         viewStart,
         durationMs,
+        feedback: feedback || '',
       }, resolve);
     });
 
@@ -214,7 +244,6 @@ $('doneBtn').addEventListener('click', async () => {
       throw new Error(result?.error || 'Failed to save.');
     }
 
-    // Clear tracking state
     await chrome.storage.local.remove(['_tracking', '_originTime', '_viewStart']);
 
     state.currentTaskIndex++;
@@ -225,10 +254,20 @@ $('doneBtn').addEventListener('click', async () => {
     }
   } catch (err) {
     showError('taskError', err.message);
+    showTask();
   } finally {
-    $('doneBtn').disabled = false;
-    $('doneBtn').textContent = 'Done';
+    $('submitFeedbackBtn').disabled = false;
+    $('skipFeedbackBtn').disabled = false;
+    $('submitFeedbackBtn').textContent = 'Continue';
   }
+}
+
+$('submitFeedbackBtn').addEventListener('click', () => {
+  submitTaskWithFeedback($('feedbackInput').value.trim());
+});
+
+$('skipFeedbackBtn').addEventListener('click', () => {
+  submitTaskWithFeedback('');
 });
 
 // Skip task
