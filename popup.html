@@ -184,13 +184,35 @@
         <span>Tracking interactions…</span>
       </div>
     </div>
+    <div id="outcomePrompt" class="hidden" style="margin-top: 10px; font-size: 13px; color: #374151; text-align: center;">
+      Was the task completed successfully?
+    </div>
+    <div id="retryPrompt" class="hidden" style="margin-top: 10px; font-size: 13px; color: #374151; text-align: center;">
+      Would you like to try this task again?
+    </div>
+    <div id="recoveryPrompt" class="hidden" style="margin-top: 10px; font-size: 13px; color: #374151; text-align: center;">
+      This attempt has an unfinished save operation.
+    </div>
     <div class="section" style="margin-top: 12px;">
       <div id="preTrackBtns" class="btn-row">
         <button class="btn btn-primary" id="beginTaskBtn">Begin Task</button>
       </div>
       <div id="duringTrackBtns" class="btn-row hidden">
         <button class="btn btn-success" id="doneBtn">Done</button>
-        <button class="btn btn-danger" id="skipBtn">Discard & Retry</button>
+        <button class="btn" id="skipBtn" style="background:#6b7280;color:white;">Skip Task</button>
+        <button class="btn btn-danger" id="recordingProblemBtn">Recording Problem</button>
+      </div>
+      <div id="outcomeBtns" class="btn-row hidden">
+        <button class="btn btn-success" id="taskSucceededBtn">Task Succeeded</button>
+        <button class="btn btn-danger" id="taskFailedBtn">Task Failed</button>
+      </div>
+      <div id="retryChoiceBtns" class="btn-row hidden">
+        <button class="btn btn-primary" id="retryTaskBtn">Retry Task</button>
+        <button class="btn" id="doNotRetryBtn" style="background:#6b7280;color:white;">Do Not Retry</button>
+      </div>
+      <div id="recoveryBtns" class="btn-row hidden">
+        <button class="btn btn-primary" id="retryPendingBtn">Retry Pending Operation</button>
+        <button class="btn btn-danger" id="markProblemBtn">Mark Recording Problem</button>
       </div>
     </div>
     <div class="error hidden" id="taskError"></div>

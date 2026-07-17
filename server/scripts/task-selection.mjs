@@ -91,7 +91,10 @@ export function selectTasks(tasks, options = {}) {
   }
 
   return {
-    tasks: candidates.map(({ task }) => task),
+    tasks: candidates.map(({ task, sourceIndex }) => ({
+      ...task,
+      source_position: sourceIndex,
+    })),
     sourceIndices: candidates.map(({ sourceIndex }) => sourceIndex),
   };
 }

@@ -5,7 +5,7 @@ import { getParticipantTrials } from '@/lib/results';
 import { saveSessionTrace } from '@/lib/sessions';
 import { getTrialConfigs } from '@/lib/manifest';
 import { getActiveWebsiteMetadata } from '@/lib/website-metadata';
-import { completeAttempt, getRun } from '@/lib/participant-store';
+import { completeAttemptEvidence, getAttempt, getRun } from '@/lib/participant-store';
 import { generateTrials } from '@/lib/trials';
 
 export async function POST(req: NextRequest) {
@@ -13,6 +13,7 @@ export async function POST(req: NextRequest) {
   const {
     sessionId, participantId, trialIndex, view_start, duration_ms, interactions,
     runId, assignmentId, attemptId, attemptNumber,
+    recording_status, recording_error, final_flush_status, final_flush_error,
   } = body;
 
   if (!participantId || typeof participantId !== 'string') {
@@ -32,6 +33,25 @@ export async function POST(req: NextRequest) {
     const managedRun = await getRun(participantId, runId);
     const managedTask = managedRun?.tasks.find((candidate) => candidate.assignment_id === assignmentId);
     if (!managedTask) throw new Error(`Assignment ${assignmentId} not found`);
+    const canonical = await getAttempt(participantId, runId, assignmentId, attemptId);
+    if (managedTask.position !== trialIndex) throw new Error('trialIndex does not match assignment');
+    if (canonical.attempt.session_id !== sessionId) throw new Error('Attempt/session mismatch');
+    if (canonical.attempt.attempt_number !== attemptNumber) throw new Error('attemptNumber does not match attempt');
+    if (canonical.attempt.status !== 'recording') {
+      // A duplicate completion must repair participant-v2 projections only. Rewriting
+      // session/results evidence here could downgrade an already decided attempt.
+      const managed = await completeAttemptEvidence({
+        participantId, runId, assignmentId, attemptId, sessionId,
+      });
+      return NextResponse.json({
+        success: true,
+        sessionId,
+        analyzeUrl: `/api/sessions/${sessionId}/analyze`,
+        attemptStatus: managed.attempt.status,
+        pendingOutcome: managed.attempt.status === 'completed_pending_outcome',
+        outcome: managed.attempt.outcome,
+      });
+    }
     const trials = await getParticipantTrials(participantId);
     const task = trials?.find((trial) => trial.index === trialIndex);
     const configs = await getTrialConfigs();
@@ -52,22 +72,28 @@ export async function POST(req: NextRequest) {
       assignment_id: assignmentId,
       attempt_id: attemptId,
       attempt_number: attemptNumber,
+      attempt_status: 'completed_pending_outcome',
+      task_status: 'pending',
+      recording_status: recording_status === 'missing' ? 'missing' : 'saved',
+      recording_error: typeof recording_error === 'string' ? recording_error.slice(0, 500) : undefined,
+      final_flush_status: final_flush_status === 'unavailable' ? 'unavailable' : 'complete',
+      final_flush_error: typeof final_flush_error === 'string' ? final_flush_error.slice(0, 500) : undefined,
       website,
     });
 
-    const managed = await completeAttempt({
+    const managed = await completeAttemptEvidence({
       participantId, runId, assignmentId, attemptId, sessionId,
     });
 
     await withResultsLock(async (data) => {
-      if (!data[participantId]) data[participantId] = { trials: generateTrials(configs) };
+      if (!data[participantId]) {
+        data[participantId] = { run_id: runId, trials: generateTrials(configs) };
+      }
       const participant = data[participantId];
+      if (participant.run_id && participant.run_id !== runId) return;
 
       const trial = participant.trials.find(t => t.index === trialIndex);
       if (!trial) return;
-
-      trial.completed = true;
-      trial.timestamp = new Date().toISOString();
 
       if (view_start && !trial.view_start) {
         trial.view_start = view_start;
@@ -85,7 +111,9 @@ export async function POST(req: NextRequest) {
       success: true,
       sessionId,
       analyzeUrl: `/api/sessions/${sessionId}/analyze`,
-      runCompleted: managed.runCompleted,
+      attemptStatus: managed.attempt.status,
+      pendingOutcome: managed.attempt.status === 'completed_pending_outcome',
+      outcome: managed.attempt.outcome,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error';

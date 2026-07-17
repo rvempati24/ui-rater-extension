@@ -159,4 +159,6 @@ server/.next-smoke/
 scripts/trace-export.local.json
 server/.runtime/
 server/.website-cache/
+# The tracked default demo remains available; newly provisioned website builds stay local.
+server/public/apps/
 .DS_Store

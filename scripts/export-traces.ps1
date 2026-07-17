@@ -1,13 +1,14 @@
 param(
   [string]$Config = "$PSScriptRoot\trace-export.example.json",
-  [ValidateSet("accepted", "audit")][string]$Mode = "accepted",
+  [ValidateSet("", "accepted", "audit")][string]$Mode = "",
   [string]$RunId = "",
   [switch]$NoVideo,
   [switch]$UploadHf,
   [switch]$DryRun
 )
 
-$arguments = @("$PSScriptRoot\export_traces.py", "--config", $Config, "--mode", $Mode)
+$arguments = @("$PSScriptRoot\export_traces.py", "--config", $Config)
+if ($Mode) { $arguments += @("--mode", $Mode) }
 if ($RunId) { $arguments += @("--run-id", $RunId) }
 if ($NoVideo) { $arguments += "--no-video" }
 if ($UploadHf) { $arguments += "--upload-hf" }

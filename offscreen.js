@@ -22,6 +22,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 async function startRecording(streamId) {
+  if (recorder || pendingBlob) {
+    throw new Error('A previous recording is still active or waiting to upload');
+  }
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
     video: {
@@ -33,7 +36,6 @@ async function startRecording(streamId) {
   });
 
   chunks = [];
-  pendingBlob = null;
   lastUploadedTask = null;
   recorder = new MediaRecorder(stream, {
     mimeType: 'video/webm;codecs=vp8',
@@ -63,12 +65,12 @@ async function stopRecording(serverUrl, participantId, taskIndex, managed = {}) 
   }
 
   if (!serverUrl || !participantId || !taskIndex) {
-    return { ok: false, error: 'Missing upload params' };
+    return { ok: false, error: 'Missing upload params', code: 'invalid_upload', retryable: false };
   }
   const uploadKey = `${serverUrl}|${participantId}|${managed.attemptId || taskIndex}`;
   if (!pendingBlob) {
     if (lastUploadedTask === uploadKey) return { ok: true, alreadyUploaded: true };
-    return { ok: false, error: 'Not recording' };
+    return { ok: false, error: 'Not recording', code: 'recorder_unavailable', retryable: false };
   }
 
   try {
@@ -85,7 +87,7 @@ async function stopRecording(serverUrl, participantId, taskIndex, managed = {}) 
     lastUploadedTask = uploadKey;
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err.message };
+    return { ok: false, error: err.message, code: 'upload_failed', retryable: true };
   }
 }
 

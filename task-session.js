@@ -50,21 +50,20 @@
 
   async function beginRecordingOnTab(deps, options) {
     let recordingStarted = false;
-    let sessionStored = false;
     let trackingAttempted = false;
+    let session;
 
     try {
       await deps.startRecording(options.tabId);
       recordingStarted = true;
 
       // Timestamp zero is created only after MediaRecorder has acknowledged start.
-      const session = deps.createSession
+      session = deps.createSession
         ? await deps.createSession()
         : options.session;
       if (!session) throw new Error('Task session was not created');
 
       await deps.storeSession({ ...session, taskTabId: options.tabId });
-      sessionStored = true;
 
       trackingAttempted = true;
       await deps.startTracking(options.tabId, session);
@@ -72,10 +71,33 @@
     } catch (error) {
       if (trackingAttempted) await deps.stopTracking(options.tabId).catch(() => {});
       if (recordingStarted) await deps.cancelRecording().catch(() => {});
-      if (sessionStored) await deps.clearSession(session).catch(() => {});
+      if (session) await deps.clearSession(session).catch(() => {});
       throw error;
     }
   }
 
-  return { beginRecordingOnTab, planTaskStart };
+  function resolveTaskView(state) {
+    const phase = state.workflow?.phase;
+    if (phase === 'recording' || phase === 'finalizing_evidence'
+      || phase === 'submitting_outcome' || phase === 'awaiting_retry_choice'
+      || phase === 'starting' || phase === 'start_failed') return phase;
+    if (phase === 'awaiting_outcome') {
+      return state.workflow?.intendedOutcome ? 'submitting_outcome' : 'awaiting_outcome';
+    }
+    // Legacy fallback only. A persisted workflow phase is authoritative.
+    if (state.tracking) return 'recording';
+    if (state.activeSession) return 'finalizing_evidence';
+    return 'ready';
+  }
+
+  function mergeSnapshotProgress(activeSession, expectedSessionId, snapshotCount, lastSnapshotAt) {
+    if (!activeSession || activeSession.sessionId !== expectedSessionId) return null;
+    return {
+      ...activeSession,
+      snapshotCount: Math.max(activeSession.snapshotCount || 0, snapshotCount),
+      lastSnapshotAt: Math.max(activeSession.lastSnapshotAt || 0, lastSnapshotAt),
+    };
+  }
+
+  return { beginRecordingOnTab, mergeSnapshotProgress, planTaskStart, resolveTaskView };
 });

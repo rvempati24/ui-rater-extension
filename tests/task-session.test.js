@@ -1,7 +1,42 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { beginRecordingOnTab, planTaskStart } = require('../task-session.js');
+const {
+  beginRecordingOnTab, mergeSnapshotProgress, planTaskStart, resolveTaskView,
+} = require('../task-session.js');
+
+test('snapshot progress merges into the latest session without losing interactions', () => {
+  const latest = {
+    sessionId: 'session-1', interactions: [{ seq: 1 }, { seq: 2 }],
+    snapshotCount: 1, lastSnapshotAt: 100,
+  };
+  const merged = mergeSnapshotProgress(latest, 'session-1', 2, 200);
+  assert.deepEqual(merged.interactions, latest.interactions);
+  assert.equal(merged.snapshotCount, 2);
+  assert.equal(merged.lastSnapshotAt, 200);
+  assert.equal(mergeSnapshotProgress(null, 'session-1', 2, 200), null);
+  assert.equal(mergeSnapshotProgress(latest, 'different-session', 2, 200), null);
+});
+
+test('restores each persisted popup workflow phase', () => {
+  assert.equal(resolveTaskView({ workflow: { phase: 'recording' } }), 'recording');
+  assert.equal(resolveTaskView({
+    workflow: { phase: 'finalizing_evidence' }, activeSession: { sessionId: 's' },
+  }), 'finalizing_evidence');
+  assert.equal(resolveTaskView({ workflow: { phase: 'awaiting_outcome' } }), 'awaiting_outcome');
+  assert.equal(resolveTaskView({ workflow: { phase: 'awaiting_retry_choice' } }), 'awaiting_retry_choice');
+  assert.equal(resolveTaskView({
+    workflow: { phase: 'awaiting_outcome', intendedOutcome: 'skipped' },
+  }), 'submitting_outcome');
+  assert.equal(resolveTaskView({ activeSession: { sessionId: 'legacy' } }), 'finalizing_evidence');
+  assert.equal(resolveTaskView({ tracking: true }), 'recording');
+  assert.equal(resolveTaskView({
+    workflow: { phase: 'finalizing_evidence' }, tracking: true,
+  }), 'finalizing_evidence');
+  assert.equal(resolveTaskView({
+    workflow: { phase: 'submitting_outcome' }, tracking: true,
+  }), 'submitting_outcome');
+});
 
 test('records the current tab when it already shows the task website', () => {
   const result = planTaskStart({
@@ -103,4 +138,25 @@ test('leaves the task page open and pending when capture fails', async () => {
     /activeTab missing/
   );
   assert.deepEqual(calls, []);
+});
+
+test('invalidates a server attempt when local session storage fails', async () => {
+  const calls = [];
+  const session = { sessionId: 'session-1', attemptId: 'attempt-1' };
+  const deps = {
+    startRecording: async () => calls.push('record'),
+    createSession: async () => session,
+    storeSession: async () => { throw new Error('storage unavailable'); },
+    startTracking: async () => calls.push('track'),
+    stopTracking: async () => calls.push('stop-track'),
+    cancelRecording: async () => calls.push('cancel-recording'),
+    clearSession: async (value) => calls.push(['clear', value]),
+  };
+
+  await assert.rejects(beginRecordingOnTab(deps, { tabId: 9 }), /storage unavailable/);
+  assert.deepEqual(calls, [
+    'record',
+    'cancel-recording',
+    ['clear', session],
+  ]);
 });

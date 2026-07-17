@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { InteractionEvent, SessionManifest, SnapshotMetadata } from '@/types';
-import { SESSIONS_DIR } from './paths';
+import type { InteractionEvent, SessionManifest, SnapshotMetadata } from '@/types';
+import { SESSIONS_DIR } from './paths.ts';
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SNAPSHOT_ID = /^s\d{4}$/;
@@ -54,9 +54,15 @@ async function updateManifestUnlocked(
     session_id: sessionId,
     status: 'recording',
   });
-  const safePatch = current.status === 'complete' && patch.status === 'recording'
-    ? { ...patch, status: 'complete' as const }
-    : patch;
+  const safePatch: Partial<SessionManifest> = { ...patch };
+  if (current.status === 'complete' && patch.status === 'recording') {
+    safePatch.status = 'complete';
+    delete safePatch.attempt_status;
+    delete safePatch.task_status;
+    delete safePatch.outcome;
+    delete safePatch.outcome_reason;
+    delete safePatch.outcome_at;
+  }
   const next: SessionManifest = {
     ...current,
     ...safePatch,
@@ -82,11 +88,17 @@ export async function saveSessionTrace(
 ): Promise<void> {
   await withSessionLock(sessionId, async () => {
     const dir = getSessionDir(sessionId);
+    const manifest = await readJson<SessionManifest>(path.join(dir, 'manifest.json'), {
+      schema_version: 1, session_id: sessionId, status: 'recording',
+    });
+    if (manifest.status === 'complete' && metadata.status === 'recording') return;
     const traceFile = path.join(dir, 'trace.json');
     const current = await readJson<{ interactions: InteractionEvent[] }>(
       traceFile, { interactions: [] }
     );
-    const nextInteractions = interactions.length >= current.interactions.length
+    const nextInteractions = manifest.status === 'complete'
+      ? current.interactions
+      : interactions.length >= current.interactions.length
       ? interactions
       : current.interactions;
     await writeJson(traceFile, {
@@ -136,8 +148,40 @@ export async function saveSnapshot(
       elements: Array.isArray(input.elements) ? input.elements.slice(0, 60) : [],
       image_file: `snapshots/${imageFile}`,
     };
-    await fs.writeFile(path.join(snapshotDir, imageFile), image);
-    await writeJson(path.join(snapshotDir, `${input.snapshotId}.json`), metadata);
+    const imagePath = path.join(snapshotDir, imageFile);
+    const metadataPath = path.join(snapshotDir, `${input.snapshotId}.json`);
+    const [existingImage, existingMetadata] = await Promise.all([
+      fs.readFile(imagePath).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+      }),
+      readJson<SnapshotMetadata | null>(metadataPath, null),
+    ]);
+    if (existingImage) {
+      if (!existingImage.equals(image)) {
+        throw new Error(`Snapshot ${input.snapshotId} already exists with different content`);
+      }
+      if (existingMetadata) {
+        if (existingMetadata.snapshot_id !== input.snapshotId) {
+          throw new Error(`Snapshot ${input.snapshotId} metadata is inconsistent`);
+        }
+        return existingMetadata;
+      }
+      // Repair a crash after the immutable JPEG write but before metadata write.
+      await writeJson(metadataPath, metadata);
+      const repairedJsonFiles = (await fs.readdir(snapshotDir)).filter((name) => name.endsWith('.json'));
+      await updateManifestUnlocked(sessionId, { snapshot_count: repairedJsonFiles.length });
+      return metadata;
+    }
+    if (existingMetadata) {
+      throw new Error(`Snapshot ${input.snapshotId} metadata exists without its image`);
+    }
+    const manifest = await readJson<SessionManifest>(path.join(getSessionDir(sessionId), 'manifest.json'), {
+      schema_version: 1, session_id: sessionId, status: 'recording',
+    });
+    if (manifest.status === 'complete') throw new Error('Completed sessions do not accept new snapshots');
+    await fs.writeFile(imagePath, image, { flag: 'wx' });
+    await writeJson(metadataPath, metadata);
 
     const jsonFiles = (await fs.readdir(snapshotDir)).filter((name) => name.endsWith('.json'));
     await updateManifestUnlocked(sessionId, { snapshot_count: jsonFiles.length });

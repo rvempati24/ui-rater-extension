@@ -32,13 +32,17 @@ def make_attempt(root: Path, status="accepted") -> tuple[Path, Path]:
     })
     write_json(task / "task.json", {
         "schema_version": 2, "participant_id": "P001", "run_id": "run_001",
-        "assignment_id": "asg_001", "position": 1, "task_prompt": "Do task",
+        "assignment_id": "asg_001", "position": 1, "source_position": 5,
+        "task_prompt": "Do task",
         "accepted_attempt_id": "att_001" if status == "accepted" else None,
+        "status": "completed" if status == "accepted" else "pending",
+        "outcome": "succeeded" if status == "accepted" else "recording_problem",
     })
     write_json(attempt / "attempt.json", {
         "schema_version": 2, "participant_id": "P001", "run_id": "run_001",
         "assignment_id": "asg_001", "attempt_id": "att_001", "attempt_number": 1,
         "session_id": "session_001", "status": status,
+        "outcome": "succeeded" if status == "accepted" else "recording_problem",
     })
     write_json(attempt / "manifest.json", {"session_id": "session_001", "status": "complete"})
     write_json(attempt / "trace.json", {"interactions": [{"seq": 1}]})
@@ -49,6 +53,28 @@ def make_attempt(root: Path, status="accepted") -> tuple[Path, Path]:
 
 
 class ExportTraceTests(unittest.TestCase):
+    def test_rejects_broken_accepted_pointer_and_multiple_accepted_attempts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            participants, attempt = make_attempt(root)
+            task_file = attempt.parent.parent / "task.json"
+            task = json.loads(task_file.read_text())
+            task["accepted_attempt_id"] = "att_missing"
+            write_json(task_file, task)
+            with self.assertRaisesRegex(ValueError, "accepted_attempt_id"):
+                export_traces.copy_participant_export(participants, root / "bad-pointer")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            participants, attempt = make_attempt(root)
+            duplicate = attempt.parent / "002-att_002"
+            __import__("shutil").copytree(attempt, duplicate)
+            metadata = json.loads((duplicate / "attempt.json").read_text())
+            metadata["attempt_id"] = "att_002"
+            write_json(duplicate / "attempt.json", metadata)
+            with self.assertRaisesRegex(ValueError, "multiple accepted"):
+                export_traces.copy_participant_export(participants, root / "duplicate")
+
     def test_exports_participant_first_accepted_attempt(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -59,6 +85,7 @@ class ExportTraceTests(unittest.TestCase):
             self.assertTrue((target / "trace.json").exists())
             self.assertEqual(rows[0]["artifact_path"], target.relative_to(destination).as_posix())
             self.assertIn("recording.webm", rows[0]["artifact_checksums"])
+            self.assertEqual(rows[0]["task_source_position"], 5)
             self.assertEqual(len((destination / "index/attempts.jsonl").read_text().splitlines()), 1)
 
     def test_accepted_mode_excludes_invalidated_attempt(self):
@@ -69,6 +96,21 @@ class ExportTraceTests(unittest.TestCase):
             self.assertEqual(rows, [])
             audit = export_traces.copy_participant_export(participants, root / "audit", mode="audit")
             self.assertEqual(len(audit), 1)
+            self.assertEqual(audit[0]["task_status"], "pending")
+
+    def test_audit_mode_includes_failed_skipped_and_invalidated_terminal_attempts(self):
+        for status, outcome in (("failed", "failed_retry"), ("failed", "skipped"), ("invalidated", "recording_problem")):
+            with self.subTest(status=status, outcome=outcome), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                participants, attempt = make_attempt(root, status=status)
+                metadata = json.loads((attempt / "attempt.json").read_text())
+                metadata["outcome"] = outcome
+                write_json(attempt / "attempt.json", metadata)
+                self.assertEqual(export_traces.copy_participant_export(
+                    participants, root / "accepted"
+                ), [])
+                rows = export_traces.copy_participant_export(participants, root / "audit", mode="audit")
+                self.assertEqual(rows[0]["outcome"], outcome)
 
     def test_audit_mode_keeps_incomplete_invalidated_attempt_metadata(self):
         with tempfile.TemporaryDirectory() as temp:

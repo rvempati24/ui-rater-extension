@@ -29,7 +29,7 @@ export async function POST(
     const configs = await getTrialConfigs();
     const created = await createRun(participantId, configs, await getActiveWebsiteMetadata());
     await withResultsLock(async (data) => {
-      data[participantId] = { trials: generateTrials(configs) };
+      data[participantId] = { run_id: created.run.run_id, trials: generateTrials(configs) };
     });
     return NextResponse.json({
       runId: created.run.run_id, runStatus: created.run.status,

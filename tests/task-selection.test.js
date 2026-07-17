@@ -20,6 +20,7 @@ test('task numbers preserve the requested order and use source indices', async (
   const selected = selectTasks(tasks, { taskNumbers: [1, 3, 5] });
   assert.deepEqual(selected.sourceIndices, [1, 3, 5]);
   assert.deepEqual(selected.tasks.map((task) => task.slug), ['one', 'three', 'five']);
+  assert.deepEqual(selected.tasks.map((task) => task.source_position), [1, 3, 5]);
 });
 
 test('Mind2Web selection recognizes metadata and adjacent prompt lists', async () => {

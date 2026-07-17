@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getParticipantTrials, withResultsLock } from '@/lib/results';
+import { getParticipantData, withResultsLock } from '@/lib/results';
 import { getTrialConfigs } from '@/lib/manifest';
 import { generateTrials } from '@/lib/trials';
 import { isValidParticipant } from '@/lib/participants';
@@ -29,13 +29,17 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: `Run is ${managed.run.status}; start a new run` }, { status: 409 });
   }
 
-  let trials = await getParticipantTrials(participantId);
+  const existingResults = await getParticipantData(participantId);
+  let trials = existingResults?.trials ?? null;
 
-  if (createdRun || !trials || trials.length === 0) {
+  if (createdRun || existingResults?.run_id !== managed.run.run_id || !trials?.length) {
     trials = await withResultsLock(async (data) => {
-      if (!createdRun && data[participantId]?.trials?.length > 0) return data[participantId].trials;
+      const current = data[participantId];
+      if (!createdRun && current?.run_id === managed.run.run_id && current.trials.length > 0) {
+        return current.trials;
+      }
       const generated = generateTrials(configs);
-      data[participantId] = { trials: generated };
+      data[participantId] = { run_id: managed.run.run_id, trials: generated };
       return generated;
     });
   }
@@ -43,9 +47,13 @@ export async function GET(req: NextRequest) {
   const tasks = managed.tasks.map((task) => ({
     task_prompt: task.task_prompt, site_url: task.site_url, group: task.group, slug: task.slug,
     assignment_id: task.assignment_id, position: task.position,
+    source_position: task.source_position,
     accepted_attempt_id: task.accepted_attempt_id, attempt_count: task.attempt_count,
+    status: task.status,
+    outcome: task.outcome,
+    reason: task.reason,
   }));
-  const currentTaskIndex = managed.tasks.findIndex((task) => !task.accepted_attempt_id);
+  const currentTaskIndex = managed.tasks.findIndex((task) => task.status === 'pending');
 
   return NextResponse.json({
     runId: managed.run.run_id,

@@ -200,14 +200,17 @@
 
   async function stopTracking() {
     if (!tracking) return;
-    await requestSnapshot('task-end');
-    tracking = false;
     detachListeners();
     if (snapshotTimer) clearTimeout(snapshotTimer);
     if (saveInterval) clearInterval(saveInterval);
     snapshotTimer = null;
     saveInterval = null;
     await flushToBackground();
+    // Keep the session logically active until the final screenshot request has
+    // reached the background worker; requestSnapshot intentionally ignores an
+    // inactive session.
+    await requestSnapshot('task-end').catch(() => {});
+    tracking = false;
     chrome.storage.local.remove(['_tracking', '_sessionId', '_originTime', '_viewStart']);
   }
 

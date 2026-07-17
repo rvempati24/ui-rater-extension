@@ -23,13 +23,13 @@ function usage() {
     `  --hf-site <name>          Restrict random remote selection by website\n` +
     `  --hf-revision <revision>  Dataset revision (default: prompt-userflow-regen-20260624)\n` +
     `  --website-cache <folder>  Download cache (default: .website-cache)\n` +
-    `  --attempt <id>            Attempt label stored with traces (default: attempt-001)\n` +
     `  --all                     Run all available tasks (default)\n` +
     `  --random [n]              Randomly run one task, or n tasks\n` +
     `  --tasks <1 3 5|1,3,5>     Run specified 1-based source task numbers\n` +
     `  --mind2web                Keep only original Mind2Web tasks\n` +
     `  --mind2web-tasks <file>   Optional numbered Mind2Web task list\n` +
     `  --seed <text>             Reproduce random selection\n` +
+    `  --keep-open               Keep localhost running after the selected run completes\n` +
     `  --dry-run                 Print selection without starting Next.js\n` +
     `  --help                    Show this help`;
 }
@@ -47,6 +47,7 @@ export function parseArgs(args) {
     if (arg === '--help') options.help = true;
     else if (arg === '--all') options.all = true;
     else if (arg === '--mind2web') options.mind2webOnly = true;
+    else if (arg === '--keep-open') options.keepOpen = true;
     else if (arg === '--dry-run') options.dryRun = true;
     else if (arg === '--website-dir') options.websiteDir = takeValue(args, index++, arg);
     else if (arg === '--tasks-json') options.taskFile = takeValue(args, index++, arg);
@@ -55,7 +56,6 @@ export function parseArgs(args) {
     else if (arg === '--hf-site') options.hfSite = takeValue(args, index++, arg);
     else if (arg === '--hf-revision') options.hfRevision = takeValue(args, index++, arg);
     else if (arg === '--website-cache') options.websiteCache = takeValue(args, index++, arg);
-    else if (arg === '--attempt') options.attempt = takeValue(args, index++, arg);
     else if (arg === '--mind2web-tasks') options.mind2webFile = takeValue(args, index++, arg);
     else if (arg === '--seed') options.seed = takeValue(args, index++, arg);
     else if (arg === '--random') {
@@ -215,6 +215,7 @@ async function main() {
   await fsp.mkdir(runtimeDir, { recursive: true });
   const runtimeFile = path.join(runtimeDir, `trials-config-${process.pid}.json`);
   const metadataFile = path.join(runtimeDir, `website-metadata-${process.pid}.json`);
+  const shutdownFile = path.join(runtimeDir, `shutdown-${process.pid}.json`);
   await fsp.writeFile(runtimeFile, `${JSON.stringify(selected.tasks, null, 2)}\n`, 'utf8');
   await fsp.writeFile(metadataFile, `${JSON.stringify(website, null, 2)}\n`, 'utf8');
 
@@ -227,21 +228,44 @@ async function main() {
       UI_RATER_WEBSITE_SOURCE_DIR: website.source_dir,
       UI_RATER_WEBSITE_METADATA_FILE: metadataFile,
       UI_RATER_WEBSITE_RUN_ID: website.run_id,
-      UI_RATER_ATTEMPT: options.attempt ?? 'attempt-001',
+      ...(options.keepOpen ? {} : { UI_RATER_SHUTDOWN_FILE: shutdownFile }),
     },
     stdio: 'inherit',
   });
 
+  let shutdownMonitor;
+  let autoShutdown = false;
   const cleanup = () => {
+    if (shutdownMonitor) clearInterval(shutdownMonitor);
     try { fs.unlinkSync(runtimeFile); } catch (error) { if (error?.code !== 'ENOENT') console.error(error); }
     try { fs.unlinkSync(metadataFile); } catch (error) { if (error?.code !== 'ENOENT') console.error(error); }
+    try { fs.unlinkSync(shutdownFile); } catch (error) { if (error?.code !== 'ENOENT') console.error(error); }
   };
+  if (!options.keepOpen) {
+    console.log('Auto-close: localhost will stop after this run reaches a terminal state.');
+    shutdownMonitor = setInterval(() => {
+      if (!fs.existsSync(shutdownFile)) return;
+      clearInterval(shutdownMonitor);
+      shutdownMonitor = undefined;
+      autoShutdown = true;
+      console.log('Selected task run completed; stopping localhost...');
+      setTimeout(() => {
+        if (process.platform === 'win32') {
+          spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+          try { fs.unlinkSync(path.join(serverDir, '.next', 'dev', 'lock')); }
+          catch (error) { if (error?.code !== 'ENOENT') console.error(error); }
+        } else {
+          child.kill('SIGINT');
+        }
+      }, 1000);
+    }, 250);
+  }
   process.on('exit', cleanup);
   process.on('SIGINT', () => child.kill('SIGINT'));
   process.on('SIGTERM', () => child.kill('SIGTERM'));
   child.on('exit', (code, signal) => {
     cleanup();
-    process.exitCode = code ?? (signal ? 1 : 0);
+    process.exitCode = autoShutdown ? 0 : code ?? (signal ? 1 : 0);
   });
 }
 

@@ -16,6 +16,7 @@ import tempfile
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "scripts" / "trace-export.example.json"
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+AUDIT_ATTEMPT_STATUSES = {"accepted", "failed", "invalidated"}
 
 
 def parse_bool(value: object, default: bool = False) -> bool:
@@ -90,12 +91,26 @@ def selected_attempts(run_dir: Path, mode: str) -> list[tuple[Path, dict, dict]]
         attempts_dir = task_dir / "attempts"
         if not attempts_dir.exists():
             continue
+        attempts: list[tuple[Path, dict]] = []
         for attempt_dir in sorted(path for path in attempts_dir.iterdir() if path.is_dir()):
             attempt = load_json(attempt_dir / "attempt.json")
             validate_id(attempt.get("attempt_id"), "attempt_id")
+            if attempt.get("assignment_id") != task.get("assignment_id"):
+                raise ValueError(f"Attempt {attempt.get('attempt_id')} belongs to another task")
+            attempts.append((attempt_dir, attempt))
+        accepted = [attempt for _, attempt in attempts if attempt.get("status") == "accepted"]
+        task_status = task.get("status") or ("completed" if task.get("accepted_attempt_id") else "pending")
+        if len(accepted) > 1:
+            raise ValueError(f"Task {task.get('assignment_id')} has multiple accepted attempts")
+        if task_status == "completed":
+            if len(accepted) != 1 or task.get("accepted_attempt_id") != accepted[0].get("attempt_id"):
+                raise ValueError(f"Task {task.get('assignment_id')} has an invalid accepted_attempt_id")
+        elif task.get("accepted_attempt_id") or accepted:
+            raise ValueError(f"Non-completed task {task.get('assignment_id')} has an accepted attempt")
+        for attempt_dir, attempt in attempts:
             if mode == "accepted" and attempt.get("status") != "accepted":
                 continue
-            if mode == "audit" and attempt.get("status") == "recording":
+            if mode == "audit" and attempt.get("status") not in AUDIT_ATTEMPT_STATUSES:
                 continue
             selected.append((attempt_dir, attempt, task))
     return selected
@@ -194,8 +209,12 @@ def copy_participant_export(
             attempt_rows.append({
                 **enriched,
                 "task_position": task.get("position"),
+                "task_source_position": task.get("source_position"),
                 "task_prompt": task.get("task_prompt"),
-                "task_origin": task.get("task_origin"),
+                "task_status": task.get("status"),
+                "task_outcome": task.get("outcome"),
+                "task_reason": task.get("reason"),
+                "task_outcome_at": task.get("outcome_at"),
                 "generator_model": website.get("model"),
                 "website": website.get("website"),
                 "artifact_path": relative,
@@ -235,7 +254,7 @@ def upload_to_hf(folder: Path, repo_id: str, revision: str, token: str):
     )
 
 
-def write_sync_state(sync_state_dir: Path, sync_queue_dir: Path, rows: list[dict], repo_id: str, revision: str, commit_sha: str):
+def write_sync_state(sync_state_dir: Path, rows: list[dict], repo_id: str, revision: str, commit_sha: str):
     sync_state_dir.mkdir(parents=True, exist_ok=True)
     runs = {(row["participant_id"], row["run_id"]) for row in rows}
     for participant_id, run_id in runs:
@@ -245,9 +264,6 @@ def write_sync_state(sync_state_dir: Path, sync_queue_dir: Path, rows: list[dict
             "synced_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         }
         (sync_state_dir / f"{run_id}.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
-        queue = sync_queue_dir / f"{run_id}.json"
-        if queue.exists():
-            queue.unlink()
 
 
 def main() -> int:
@@ -273,7 +289,6 @@ def main() -> int:
         REPO_ROOT / "exports" / "ux-task-trace",
     )
     sync_state_dir = resolve_path(config.get("sync_state_dir"), REPO_ROOT / "data" / "sync-state")
-    sync_queue_dir = resolve_path(config.get("sync_queue_dir"), REPO_ROOT / "data" / "sync-queue")
     keep_local = parse_bool(os.getenv("UI_RATER_KEEP_LOCAL_EXPORT", config.get("keep_local_export")), True)
     upload_hf = parse_bool(os.getenv("UI_RATER_UPLOAD_HF", config.get("upload_hf")), False)
     if args.upload_hf:
@@ -307,7 +322,7 @@ def main() -> int:
         if upload_hf and rows:
             commit = upload_to_hf(stage, repo_id, revision, token)
             commit_sha = getattr(commit, "oid", None) or getattr(commit, "commit_url", "unknown")
-            write_sync_state(sync_state_dir, sync_queue_dir, rows, repo_id, revision, str(commit_sha))
+            write_sync_state(sync_state_dir, rows, repo_id, revision, str(commit_sha))
             print(f"HF commit: {commit_sha}")
     return 0
 

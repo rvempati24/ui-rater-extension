@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { invalidateAttempt } from '@/lib/participant-store';
+import { recordAttemptOutcome } from '@/lib/attempt-outcomes';
 
 export async function POST(
   req: NextRequest,
@@ -11,11 +11,12 @@ export async function POST(
     return NextResponse.json({ error: 'Missing participant/run/assignment IDs' }, { status: 400 });
   }
   try {
-    const attempt = await invalidateAttempt({
+    const result = await recordAttemptOutcome({
       participantId: body.participantId, runId: body.runId,
-      assignmentId: body.assignmentId, attemptId, reason: body.reason || 'operator_retry',
+      assignmentId: body.assignmentId, attemptId, outcome: 'recording_problem',
+      reason: body.reason || 'operator_retry',
     });
-    return NextResponse.json({ ok: true, attempt });
+    return NextResponse.json({ ok: true, attempt: result.attempt });
   } catch (error: unknown) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Could not invalidate attempt' }, { status: 400 });
   }

@@ -13,9 +13,6 @@ export const RESULTS_PATH = path.join(DATA_DIR, 'results.json');
 export const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings');
 export const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
 export const PARTICIPANT_DATA_DIR = path.join(DATA_DIR, 'participants');
-export const PARTICIPANT_INDEX_DIR = path.join(DATA_DIR, 'index');
-export const SYNC_QUEUE_DIR = path.join(DATA_DIR, 'sync-queue');
-export const SYNC_STATE_DIR = path.join(DATA_DIR, 'sync-state');
 export const SESSIONS_DIR = process.env.UI_RATER_SESSION_DIR
   ? path.resolve(process.env.UI_RATER_SESSION_DIR)
   : path.join(DATA_DIR, 'sessions');

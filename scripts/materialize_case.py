@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Materialize one accepted UI Rater attempt and its exact website source."""
+"""Materialize a UI Rater attempt and its exact website source."""
 
 from __future__ import annotations
 
@@ -114,10 +114,22 @@ def make_read_only(root: Path) -> None:
             pass
 
 
-def materialize(attempt_dir: Path, destination: Path, source: Path, dataset: dict, no_video: bool = False) -> dict:
+def materialize(
+    attempt_dir: Path,
+    destination: Path,
+    source: Path,
+    dataset: dict,
+    no_video: bool = False,
+    audit: bool = False,
+) -> dict:
     attempt = load_json(attempt_dir / "attempt.json")
-    if attempt.get("status") != "accepted":
+    if attempt.get("status") != "accepted" and not audit:
         raise ValueError("Only accepted attempts can be materialized by default")
+    allowed = {"accepted", "failed", "invalidated"} if audit else {"accepted"}
+    if attempt.get("status") not in allowed:
+        raise ValueError(f"Attempt status {attempt.get('status')!r} is not materializable")
+    if not (attempt_dir / "trace.json").is_file():
+        raise ValueError("A materialized attempt must contain trace.json")
     task_dir, run_dir, participant_dir = parents(attempt_dir)
     task = load_json(task_dir / "task.json")
     run = load_json(run_dir / "run.json")
@@ -169,8 +181,9 @@ def materialize(attempt_dir: Path, destination: Path, source: Path, dataset: dic
         },
     }
     (contract / "finding.schema.json").write_text(json.dumps(schema, indent=2), encoding="utf-8")
+    review_scope = "accepted task attempt" if attempt.get("status") == "accepted" else "audit task attempt"
     (contract / "instructions.md").write_text(
-        "Review this accepted task attempt for usability problems.\n"
+        f"Review this {review_scope} for usability problems.\n"
         "Cite real trace event sequence numbers and snapshot IDs. Separate observation from inference.\n"
         "Inspect source before citing paths. Recommend changes but do not edit website/.\n"
         "Write JSON matching finding.schema.json to output/findings.json.\n",
@@ -182,11 +195,20 @@ def materialize(attempt_dir: Path, destination: Path, source: Path, dataset: dic
         "participant_id": participant["participant_id"], "run_id": run["run_id"],
         "assignment_id": task["assignment_id"], "attempt_id": attempt["attempt_id"],
         "session_id": attempt["session_id"],
-        "task": {"position": task["position"], "prompt": task["task_prompt"], "start_url": task.get("site_url", "")},
+        "attempt_status": attempt.get("status"), "outcome": attempt.get("outcome"),
+        "reason": attempt.get("reason"), "outcome_at": attempt.get("outcome_at"),
+        "task": {
+            "position": task["position"],
+            "source_position": task.get("source_position"),
+            "prompt": task["task_prompt"],
+            "start_url": task.get("site_url", ""),
+        },
+        "task_status": task.get("status"),
         "website": run.get("website", {}),
         "dataset": dataset,
         "evidence": {"trace": "evidence/trace.json", "snapshots": snapshots,
-                     "recording": None if no_video else "evidence/recording.webm"},
+                     "recording": None if no_video or not (evidence / "recording.webm").is_file()
+                     else "evidence/recording.webm"},
         "source_root": "website", "output_schema": "contract/finding.schema.json",
     }
     (destination / "case.json").write_text(json.dumps(case, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -205,6 +227,8 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--cache-dir", default=str(REPO_ROOT / ".case-cache"))
     parser.add_argument("--no-video", action="store_true")
+    parser.add_argument("--audit", action="store_true",
+                        help="Explicitly allow a failed or invalidated terminal attempt")
     args = parser.parse_args()
     token = os.getenv("HF_TOKEN") or None
     cache = Path(args.cache_dir).resolve()
@@ -218,7 +242,10 @@ def main() -> int:
     _, run_dir, _ = parents(attempt_dir)
     run = load_json(run_dir / "run.json")
     source, source_sha = resolve_source(run, Path(args.website_source) if args.website_source else None, token, cache)
-    case = materialize(attempt_dir, Path(args.output).resolve(), source, {**dataset, "source_commit_sha": source_sha}, args.no_video)
+    case = materialize(
+        attempt_dir, Path(args.output).resolve(), source,
+        {**dataset, "source_commit_sha": source_sha}, args.no_video, args.audit,
+    )
     print(json.dumps({"ok": True, "case": str(Path(args.output).resolve()), "attempt_id": case["attempt_id"]}))
     return 0
 

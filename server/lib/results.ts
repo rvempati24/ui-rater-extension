@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { Trial, ResultsStore } from '@/types';
-import { RESULTS_PATH } from './paths';
+import type { ParticipantData, Trial, ResultsStore } from '@/types';
+import { RESULTS_PATH } from './paths.ts';
 
 const TMP_PATH = RESULTS_PATH + '.tmp';
 
@@ -40,6 +40,12 @@ export function withResultsLock<T>(fn: (data: ResultsStore) => Promise<T>): Prom
 export async function getParticipantTrials(
   participantId: string
 ): Promise<Trial[] | null> {
+  return (await getParticipantData(participantId))?.trials ?? null;
+}
+
+export async function getParticipantData(
+  participantId: string
+): Promise<ParticipantData | null> {
   const data = await readResults();
-  return data[participantId]?.trials ?? null;
+  return data[participantId] ?? null;
 }

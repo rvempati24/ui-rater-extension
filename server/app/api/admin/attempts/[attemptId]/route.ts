@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { decideAttempt, invalidateAttempt } from '@/lib/participant-store';
+import { recordAttemptOutcome } from '@/lib/attempt-outcomes';
 import { requireLocalAdmin } from '@/lib/admin-auth';
 
 export async function PATCH(req: NextRequest, context: { params: Promise<{ attemptId: string }> }) {
@@ -15,10 +15,15 @@ export async function PATCH(req: NextRequest, context: { params: Promise<{ attem
     return NextResponse.json({ error: 'Missing participant/run/assignment IDs' }, { status: 400 });
   }
   try {
-    const attempt = body.action === 'invalidate'
-      ? await invalidateAttempt({ ...common, reason: body.reason || 'operator_invalidated' })
-      : await decideAttempt({ ...common, action: body.action, reason: body.reason });
-    return NextResponse.json({ attempt });
+    if (body.action !== 'accept' && body.action !== 'invalidate') {
+      throw new Error('Action must be accept or invalidate');
+    }
+    const result = await recordAttemptOutcome({
+      ...common,
+      outcome: body.action === 'accept' ? 'succeeded' : 'recording_problem',
+      reason: body.reason || (body.action === 'invalidate' ? 'operator_invalidated' : undefined),
+    });
+    return NextResponse.json({ attempt: result.attempt });
   } catch (error: unknown) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Update failed' }, { status: 400 });
   }

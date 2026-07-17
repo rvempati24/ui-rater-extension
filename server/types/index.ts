@@ -56,6 +56,11 @@ export interface Trial {
   duration_ms: number | null;
   interactions: InteractionEvent[];
   session_id?: string;
+  outcome?: 'succeeded' | 'failed_retry' | 'failed_no_retry' | 'skipped' | 'recording_problem';
+  attempt_status?: 'recording' | 'completed_pending_outcome' | 'accepted' | 'failed' | 'invalidated';
+  task_status?: 'pending' | 'completed' | 'skipped' | 'failed_no_retry';
+  outcome_reason?: string;
+  outcome_at?: string;
 }
 
 export interface SessionManifest {
@@ -76,6 +81,15 @@ export interface SessionManifest {
   run_id?: string;
   assignment_id?: string;
   attempt_number?: number;
+  attempt_status?: 'recording' | 'completed_pending_outcome' | 'accepted' | 'failed' | 'invalidated';
+  task_status?: 'pending' | 'completed' | 'skipped' | 'failed_no_retry';
+  outcome?: 'succeeded' | 'failed_retry' | 'failed_no_retry' | 'skipped' | 'recording_problem';
+  outcome_reason?: string;
+  outcome_at?: string;
+  recording_status?: 'saved' | 'missing';
+  recording_error?: string;
+  final_flush_status?: 'complete' | 'unavailable';
+  final_flush_error?: string;
   website?: WebsiteMetadata;
 }
 
@@ -125,12 +139,14 @@ export interface TrialConfigEntry {
   group: string;
   plain_app: string;
   task_prompt: string;
+  source_position?: number;
   site_url?: string;
   defects: { app: string; principle: string; defect_descriptions: string[] }[];
   suggested_flows: string[];
 }
 
 export interface ParticipantData {
+  run_id?: string;
   trials: Trial[];
 }
 

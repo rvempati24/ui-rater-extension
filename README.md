@@ -7,7 +7,7 @@ This Chrome extension records interaction traces, tab video, and a small set of 
 The current version includes:
 
 - durable task traces backed by `chrome.storage.local`;
-- one local `data/sessions/<session-id>/` directory per completed task;
+- one immutable `data/sessions/<session-id>/` directory per recording attempt;
 - key screenshots at start, click/change/submit/navigation, and task end;
 - one-pass multimodal UX analysis with evidence IDs;
 - optional bounded website source context and ranked source-file candidates;
@@ -26,7 +26,7 @@ It intentionally does not include a database, job queue, multi-agent pipeline, a
 | Select/download an HF website | add `--hf-website <model/site/run>` or use `--hf-model`/`--hf-site`; omit all three for a random run |
 | Preview selection only | add `--dry-run` |
 | Start another run for the same participant | check **Start a new run** in the extension |
-| Discard a broken recording and retry | click **Discard & Retry**; the invalidated attempt is retained |
+| Report a broken recording and retry | click **Recording Problem**; if a save is stuck, use **Mark Recording Problem**; the invalidated attempt is retained |
 | Prepare LLM input without a model call | `POST /api/sessions/<session-id>/analyze?prepareOnly=1` |
 | Run LLM analysis | `POST /api/sessions/<session-id>/analyze` |
 | Preview/export/upload traces | use `scripts/export-traces.ps1` on Windows or `scripts/export-traces.sh` on Linux/macOS |
@@ -72,9 +72,9 @@ npm run dev
 2. Enable Developer mode.
 3. Choose **Load unpacked** and select this repository directory, not `server/`.
 4. Enter the participant ID and `http://localhost:3000` in the popup.
-5. Complete a synthetic task and click **Done**.
+5. Complete a synthetic task, click **Done**, then choose **Task Succeeded** or **Task Failed**.
 
-Reloading the extension does not clear its saved participant ID, task list, or current task position because these values live in `chrome.storage.local`. Use the always-visible **Clear Cache** button to clear only this extension's browser state; it never calls the server reset API and does not delete saved traces, screenshots, videos, participant folders, or HF data. Cache clearing is blocked while recording—click **Done** or **Discard & Retry** first. After clearing, enter the participant ID and server URL and load tasks again. **Start Over** clears the same run-selection state after a completed run. Removing and loading the extension again also creates a clean browser-side state.
+Reloading the extension does not clear its participant, task, recording, or pending-outcome state because these values live in `chrome.storage.local`. The always-visible **Clear Cache** button clears only browser-side Extension state; it never calls the server reset API or deletes saved evidence. Cache clearing is blocked while an attempt is recording, finalizing, or waiting for a result. Resolve the active attempt first. After clearing, enter the participant ID and server URL and load tasks again. **Start Over** clears the same run-selection state after a completed run.
 
 ## End-to-end local pilot
 
@@ -85,11 +85,12 @@ cd server
 npm run dev:tasks -- `
   --website-dir "../../../uxBench/allrecipes" `
   --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" `
-  --tasks 1 3 5 `
-  --attempt pilot-001
+  --tasks 1 3 5
 ```
 
 The terminal should report `Selected 3/... tasks` and listen on `http://localhost:3000`. If Next.js switches to port 3001 or reports a `.next` lock, stop the older server before testing; otherwise the extension may still talk to an earlier one-task configuration.
+
+By default, `dev:tasks` stops localhost about one second after every selected task in the participant run reaches `completed`, `skipped`, or `failed_no_retry`. This happens after the final outcome and compatibility metadata are saved. Add `--keep-open` when testing multiple participants against the same selected task configuration.
 
 Use a valid participant ID that has not requested tasks from this server data directory. Before opening the extension, verify the server-side assignment:
 
@@ -99,7 +100,7 @@ Invoke-RestMethod `
   ConvertTo-Json -Depth 5
 ```
 
-The response should contain `totalTasks: 3`. Loading the extension afterwards should show `Task 1 of 3`.
+The response should contain `totalTasks: 3`. For `--tasks 1 3 5`, the task entries have run `position` values `1, 2, 3` and original `source_position` values `1, 3, 5`. Loading the extension afterwards should show `Task 1 of 3`.
 
 ## Select tasks when starting the server
 
@@ -109,7 +110,7 @@ Prefer a local website and run every task:
 
 ```bash
 cd server
-npm run dev:tasks -- --website-dir "../../../uxBench/allrecipes" --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --all --attempt pilot-001
+npm run dev:tasks -- --website-dir "../../../uxBench/allrecipes" --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --all
 ```
 
 Run one random task, or a reproducible random sample of five:
@@ -152,14 +153,23 @@ The commands are identical in PowerShell, Linux, and macOS. Task numbers always 
 
 The implemented MVP separates a stable **participant**, a configured **run**, each **task assignment**, and one or more **attempts** for that task. A participant can have multiple runs; a task can be retried without deleting its earlier evidence; and at most one attempt is accepted for analysis/export.
 
-The operator workflow is:
+The participant-facing outcome flow is deliberately separate from recording:
 
-1. Create or select a participant, then create a run that snapshots the website, tasks, seed, and launcher configuration.
-2. Record attempts under that run. A software failure creates attempt 2 rather than overwriting attempt 1.
-3. Mark bad attempts invalid with a reason, restore them if needed, or accept the good attempt. Invalid attempts remain auditable and are excluded from normal exports.
-4. Complete, abort, or archive the run. Use soft deletion by default; hard deletion requires an explicit attempt/session target and confirmation.
+1. **Done** stops recording and saves trace, screenshots, and video. The attempt becomes `completed_pending_outcome`; it is not accepted yet.
+2. **Task Succeeded** changes that attempt to `accepted`, changes the task to `completed`, and sets `accepted_attempt_id`.
+3. **Task Failed** asks whether to retry. **Retry Task** keeps the failed evidence and leaves the task pending; the next recording receives attempt number 2. **Do Not Retry** changes the task to `failed_no_retry` and advances.
+4. **Skip Task** saves any active evidence, records outcome `skipped` with reason `participant_skipped`, and advances without an accepted attempt.
+5. **Recording Problem** saves available evidence, invalidates the attempt with a reason, and leaves the task pending for a fresh attempt. If a closed task tab or missing recorder interrupts finalization, the recovery screen offers **Mark Recording Problem**. A retryable video upload remains protected for retry; genuinely unavailable video/final flush is recorded in the session manifest instead of being silently treated as saved.
 
-The extension's **Discard & Retry** action invalidates the active attempt, preserves its evidence, and keeps the same task selected. **Start Over** still clears only browser state. The local source of truth is `data/participants/`; `data/results.json`, `data/sessions/`, and `data/recordings/` continue as compatibility outputs. SQLite is deferred until multi-process concurrency or scale requires stronger transactions.
+The background service worker persists one workflow state for `starting`, `recording`, evidence finalization, outcome submission, and retry choice. Closing and reopening the popup therefore restores the correct screen. If a server request was interrupted, the popup shows **Retry Pending Operation** and safely replays the same idempotent request instead of creating another attempt. **Clear Cache** is blocked while recording or while an operation/outcome is pending; otherwise it clears only browser-side Extension state. It never deletes server recordings. The local source of truth is `data/participants/`; `data/results.json`, `data/sessions/`, and `data/recordings/` remain compatibility outputs. SQLite remains future work.
+
+| Object | States |
+| --- | --- |
+| Attempt | `recording` → `completed_pending_outcome` → `accepted`, `failed`, or `invalidated` |
+| Task | `pending` → `completed`, `skipped`, or `failed_no_retry` |
+| Run | completes only when every task is terminal (`completed`, `skipped`, or `failed_no_retry`) |
+
+Only a completed task may have `accepted_attempt_id`, and it must reference that task's one accepted attempt. Failed, skipped, and invalidated evidence is retained rather than overwritten.
 
 The APIs support creating/listing runs and changing participant, run, or attempt states. For example, list participants and one participant's runs:
 
@@ -168,7 +178,12 @@ Invoke-RestMethod http://localhost:3000/api/admin/participants
 Invoke-RestMethod http://localhost:3000/api/participants/P004/runs
 ```
 
-Invalidate, restore, or accept an attempt with `PATCH /api/admin/attempts/<attempt-id>` and a JSON body containing `participantId`, `runId`, `assignmentId`, `action`, and optional `reason`. Participant status accepts `active`, `disabled`, or `archived`; run status accepts `active`, `aborted`, or `archived`. These admin APIs are intended for the local single-operator pilot.
+The Extension uses two separate mutation APIs:
+
+- `POST /api/complete-task` saves evidence and moves a recording attempt to `completed_pending_outcome`.
+- `POST /api/attempts/<attempt-id>/outcome` accepts `succeeded`, `failed_retry`, `failed_no_retry`, `skipped`, or `recording_problem`, plus participant/run/assignment IDs and an optional reason. Repeating the same outcome is idempotent; a different or illegal transition returns HTTP 409.
+
+Participant status accepts `active`, `disabled`, or `archived`; run status accepts `active`, `aborted`, or `archived`. The older local admin attempt endpoint remains for compatibility, but finalized outcomes are immutable and cannot be restored into a different state.
 
 ```powershell
 $body = @{
@@ -307,6 +322,8 @@ sh scripts/materialize-case.sh \
   --attempt-id <attempt-id> --output .cases/<attempt-id>
 ```
 
+Both commands reject non-accepted attempts by default. For an explicit audit investigation, add `-Audit` on PowerShell or `--audit` on Linux/macOS; unfinished `recording` and `completed_pending_outcome` attempts are always rejected.
+
 Run an installed agent CLI:
 
 ```powershell
@@ -332,6 +349,21 @@ Use `UI_RATER_OPENCODE_COMMAND` or `UI_RATER_CLAUDE_COMMAND` when the CLI proxy 
 
 The pilot succeeds at the infrastructure level when every accepted finding cites real event/snapshot IDs, every source candidate exists in `source.files`, and the recommendation is understandable from the cited evidence. Whether the recommendations are actually useful should still be judged manually in this first pilot.
 
+## Manual outcome/retry pilot
+
+Use a fresh participant ID and a run with at least three synthetic tasks. Start the server, reload the unpacked Extension, enter the participant ID and `http://localhost:3000`, then click **Load Tasks**.
+
+1. On task 1, start recording and interact with the site. Click **Done**. Close and reopen the popup: it must still show **Task Succeeded / Task Failed**. Choose **Task Failed**, close/reopen again, verify **Retry Task / Do Not Retry** is restored, then choose **Retry Task**.
+2. Record task 1 again, click **Done**, then **Task Succeeded**. The popup must advance to task 2.
+3. On task 2, start recording, close the task website tab, reopen the Extension on another tab, and click **Recording Problem**. If the recovery screen appears, click **Mark Recording Problem**. Verify it remains on task 2 and allows a new recording. In that attempt's manifest, `final_flush_status` may be `unavailable`; `recording_status` is `saved` when the offscreen video survived or `missing` when the recorder itself was unavailable.
+4. Start task 2 again and click **Skip Task**. Verify the popup advances to task 3.
+5. Record task 3, choose **Task Failed**, then **Do Not Retry**. The run should finish.
+6. Inspect `data/participants/<participant-id>/runs/<run-id>/`: task 1 must contain failed attempt 1 and accepted attempt 2; task 2 must contain invalidated and skipped-outcome evidence; task 3 must be `failed_no_retry`. No failed/invalidated attempt directory should have disappeared.
+7. Check each attempt folder for `attempt.json`, `manifest.json`, `trace.json`, `snapshots/`, and `recording.webm` when recording upload succeeded. Also confirm the compatibility entries remain present in `data/results.json` and `data/sessions/<session-id>/`.
+8. Run an accepted export and confirm only task 1 attempt 2 is indexed. Run again with `--mode audit` and confirm the failed, skipped-outcome, and invalidated attempts are also indexed.
+
+The **Clear Cache** button should refuse to run during recording and both decision screens. After the run is resolved, it may clear browser state but must leave all folders above unchanged.
+
 ## Configure trace export
 
 Copy `scripts/trace-export.example.json` to a local config file and edit it:
@@ -343,7 +375,6 @@ Copy `scripts/trace-export.example.json` to a local config file and edit it:
   "export_mode": "accepted",
   "participants_dir": "data/participants",
   "sync_state_dir": "data/sync-state",
-  "sync_queue_dir": "data/sync-queue",
   "keep_local_export": true,
   "local_export_dir": "exports/ux-task-trace",
   "upload_hf": false,
@@ -354,9 +385,9 @@ Copy `scripts/trace-export.example.json` to a local config file and edit it:
 
 The settings mean:
 
-- `export_mode`: `accepted` exports completed runs and accepted attempts; `audit` also includes failed/invalidated attempts;
+- `export_mode`: `accepted` exports completed runs and accepted attempts; `audit` also includes terminal failed, skipped-outcome, and invalidated attempts;
 - `participants_dir`: participant-v2 local source of truth;
-- `sync_state_dir` and `sync_queue_dir`: local HF synchronization bookkeeping;
+- `sync_state_dir`: records the exact HF commit after a successful upload;
 - `keep_local_export`: create an additional persistent export package;
 - `local_export_dir`: path for that package;
 - `upload_hf`: enable a live Hugging Face write;
@@ -365,7 +396,7 @@ The settings mean:
 
 Relative paths are resolved from the extension repository root. Environment variables can override the config: `UI_RATER_PARTICIPANTS_DIR`, `UI_RATER_KEEP_LOCAL_EXPORT`, `UI_RATER_LOCAL_EXPORT_DIR`, `UI_RATER_UPLOAD_HF`, `HF_DATASET_REPO`, and `HF_DATASET_REVISION`.
 
-The exporter validates IDs, statuses, manifest/session linkage, non-empty trace/video, screenshot pairs, and SHA-256 checksums. It never deletes canonical participant data. On a successful HF commit it writes local sync state and removes that run's retryable sync-queue file.
+The exporter validates IDs, statuses, manifest/session linkage, non-empty trace/video, screenshot pairs, and SHA-256 checksums. It never deletes canonical participant data. On a successful HF commit it writes local sync state. Runs are discovered from the canonical participant folders, so no separate upload queue is required for this single-operator baseline.
 
 The exported layout is:
 
@@ -382,7 +413,7 @@ participants/<participant-id>/
         analysis/
 ```
 
-Website/model provenance moves into `run.json` and root query indexes. The default HF export contains completed runs and accepted attempts; audit mode may include failed or invalidated attempts with their status, reason, and `artifact_complete` flag when a failure happened before all evidence existed.
+Website/model provenance moves into `run.json` and root query indexes. The default HF export contains completed runs and accepted attempts. Audit mode may include failed, skipped-outcome, or invalidated attempts with attempt/task outcome, reason, timestamps, and an `artifact_complete` flag when a failure happened before all evidence existed.
 
 Before the first v2 export, preview or copy legacy data without deleting it:
 
@@ -409,6 +440,13 @@ powershell -ExecutionPolicy Bypass -File scripts\export-traces.ps1 `
   -Config scripts\trace-export.local.json
 ```
 
+Create an audit export that also includes failed and invalidated attempts:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\export-traces.ps1 `
+  -Config scripts\trace-export.local.json -Mode audit
+```
+
 For a live Hugging Face upload, first install the optional dependency and set a write-capable token, then pass the explicit upload switch:
 
 ```powershell
@@ -430,6 +468,12 @@ Create the configured local export:
 
 ```bash
 sh scripts/export-traces.sh --config scripts/trace-export.local.json
+```
+
+Create an audit export:
+
+```bash
+sh scripts/export-traces.sh --config scripts/trace-export.local.json --mode audit
 ```
 
 Upload explicitly:

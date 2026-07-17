@@ -2,11 +2,26 @@ importScripts('task-session.js');
 
 const DEFAULT_SERVER = 'https://ui-rater-production.up.railway.app';
 const ACTIVE_SESSION_KEY = '_activeSession';
+const WORKFLOW_KEY = '_taskWorkflow';
 const MAX_SNAPSHOTS = 20;
 const SNAPSHOT_DEBOUNCE_MS = 750;
 
-let recordingTabId = null;
 let sessionWriteLock = Promise.resolve();
+let snapshotWriteLock = Promise.resolve();
+let workflowOperationLock = Promise.resolve();
+
+function withWorkflowOperation(fn) {
+  const next = workflowOperationLock.then(fn, fn);
+  workflowOperationLock = next.catch(() => {});
+  return next;
+}
+
+async function setWorkflow(patch) {
+  const data = await chrome.storage.local.get([WORKFLOW_KEY]);
+  const workflow = { ...(data[WORKFLOW_KEY] || {}), ...patch, updatedAt: new Date().toISOString() };
+  await chrome.storage.local.set({ [WORKFLOW_KEY]: workflow });
+  return workflow;
+}
 
 async function ensureOffscreen() {
   const contexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
@@ -30,7 +45,6 @@ async function startRecording(tabId) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ type: 'START_RECORDING', streamId }, (res) => {
       if (res?.ok) {
-        recordingTabId = tabId;
         resolve();
       } else reject(new Error(res?.error || 'Failed to start recording'));
     });
@@ -42,7 +56,6 @@ async function stopRecording(serverUrl, participantId, taskIndex, managed = {}) 
     chrome.runtime.sendMessage({
       type: 'STOP_RECORDING', serverUrl, participantId, taskIndex, ...managed,
     }, (res) => {
-      if (res?.ok) recordingTabId = null;
       resolve(res || { ok: false, error: 'Recorder did not respond' });
     });
   });
@@ -51,7 +64,6 @@ async function stopRecording(serverUrl, participantId, taskIndex, managed = {}) 
 async function cancelRecording() {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({ type: 'CANCEL_RECORDING' }, (res) => {
-      recordingTabId = null;
       resolve(res || { ok: false });
     });
   });
@@ -84,13 +96,15 @@ async function openPendingTask(createOptions) {
 }
 
 async function createSession() {
-  const data = await chrome.storage.local.get(['participantId', 'serverUrl', 'runId', 'tasks', 'currentTaskIndex']);
+  const data = await chrome.storage.local.get([
+    'participantId', 'serverUrl', 'runId', 'tasks', 'currentTaskIndex', WORKFLOW_KEY,
+  ]);
   const task = data.tasks?.[data.currentTaskIndex || 0];
   if (!data.participantId || !data.runId || !task?.assignment_id) {
     throw new Error('Participant run is not configured');
   }
   const session = {
-    sessionId: crypto.randomUUID(),
+    sessionId: data[WORKFLOW_KEY]?.sessionId || crypto.randomUUID(),
     originTime: Date.now(),
     viewStart: new Date().toISOString(),
   };
@@ -110,7 +124,15 @@ async function createSession() {
 }
 
 async function startTaskFlow(msg) {
-  const stored = await chrome.storage.local.get(['_pendingTaskTabId']);
+  const stored = await chrome.storage.local.get([
+    '_pendingTaskTabId', ACTIVE_SESSION_KEY, WORKFLOW_KEY,
+  ]);
+  const existingPhase = stored[WORKFLOW_KEY]?.phase;
+  if (stored[ACTIVE_SESSION_KEY]
+    || (existingPhase && !['starting', 'start_failed'].includes(existingPhase))) {
+    throw new Error('Finish or recover the current attempt first');
+  }
+  if (existingPhase === 'starting') await cancelRecording();
   const plan = UiRaterTaskSession.planTaskStart({
     currentTab: msg.currentTab,
     siteUrl: msg.siteUrl,
@@ -132,7 +154,11 @@ async function startTaskFlow(msg) {
     }
   }
 
-  const result = await UiRaterTaskSession.beginRecordingOnTab({
+  const sessionId = stored[WORKFLOW_KEY]?.sessionId || crypto.randomUUID();
+  await setWorkflow({ phase: 'starting', sessionId, lastError: undefined });
+  let attemptInvalidated = false;
+  try {
+    const result = await UiRaterTaskSession.beginRecordingOnTab({
     startRecording,
     createSession,
     storeSession: async ({ sessionId, originTime, viewStart, taskTabId, runId, assignmentId, attemptId, attemptNumber }) => {
@@ -155,6 +181,10 @@ async function startTaskFlow(msg) {
           lastSnapshotAt: 0,
           runId, assignmentId, attemptId, attemptNumber,
         },
+        [WORKFLOW_KEY]: {
+          phase: 'recording', sessionId, runId, assignmentId, attemptId, attemptNumber,
+          updatedAt: new Date().toISOString(),
+        },
       });
     },
     startTracking: (tabId, activeSession) => sendTrackingMessage(tabId, {
@@ -164,28 +194,64 @@ async function startTaskFlow(msg) {
     cancelRecording,
     clearSession: async (failedSession) => {
       const data = await chrome.storage.local.get(['participantId', 'serverUrl']);
+      let invalidated = false;
       if (failedSession?.attemptId) {
-        await fetch(`${data.serverUrl || DEFAULT_SERVER}/api/attempts/${encodeURIComponent(failedSession.attemptId)}/invalidate`, {
+        const response = await fetch(`${data.serverUrl || DEFAULT_SERVER}/api/attempts/${encodeURIComponent(failedSession.attemptId)}/outcome`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             participantId: data.participantId, runId: failedSession.runId,
-            assignmentId: failedSession.assignmentId, reason: 'recording_start_failed',
+            assignmentId: failedSession.assignmentId, outcome: 'recording_problem',
+            reason: 'recording_start_failed',
           }),
-        }).catch(() => {});
+        }).catch(() => null);
+        invalidated = Boolean(response?.ok);
       }
-      await chrome.storage.local.remove([
-        '_tracking', '_sessionId', '_originTime', '_viewStart', '_taskTabId', ACTIVE_SESSION_KEY,
-      ]);
+      if (invalidated) {
+        await chrome.storage.local.remove([
+          '_tracking', '_sessionId', '_originTime', '_viewStart', '_taskTabId', ACTIVE_SESSION_KEY,
+          WORKFLOW_KEY,
+        ]);
+        attemptInvalidated = true;
+      } else {
+        await chrome.storage.local.set({ _tracking: false });
+      }
     },
   }, { tabId: plan.tabId });
 
-  await chrome.storage.local.remove(['_pendingTaskTabId']);
-  return { status: 'recording', ...result };
+    await chrome.storage.local.remove(['_pendingTaskTabId']);
+    return { status: 'recording', ...result };
+  } catch (error) {
+    if (!attemptInvalidated) {
+      const recovery = await chrome.storage.local.get([ACTIVE_SESSION_KEY]);
+      if (recovery[ACTIVE_SESSION_KEY]) {
+        const failed = recovery[ACTIVE_SESSION_KEY];
+        const attemptIdentity = {
+          participantId: (await chrome.storage.local.get(['participantId'])).participantId,
+          runId: failed.runId, assignmentId: failed.assignmentId, attemptId: failed.attemptId,
+          attemptNumber: failed.attemptNumber, sessionId: failed.sessionId,
+        };
+        await chrome.storage.local.set({ [WORKFLOW_KEY]: {
+          phase: 'submitting_outcome', ...attemptIdentity,
+          intendedOutcome: 'recording_problem', reason: 'recording_start_failed',
+          lastError: error.message, updatedAt: new Date().toISOString(),
+        } });
+      } else {
+        await setWorkflow({ phase: 'start_failed', sessionId, lastError: error.message });
+      }
+    }
+    throw error;
+  }
 }
 
 function withSessionWrite(fn) {
   const next = sessionWriteLock.then(fn);
   sessionWriteLock = next.catch(() => {});
+  return next;
+}
+
+function withSnapshotWrite(fn) {
+  const next = snapshotWriteLock.then(fn);
+  snapshotWriteLock = next.catch(() => {});
   return next;
 }
 
@@ -204,7 +270,7 @@ async function appendInteractions(msg) {
 
     if (data.participantId && data.tasks) {
       const serverUrl = data.serverUrl || DEFAULT_SERVER;
-      await fetch(`${serverUrl}/api/partial-save`, {
+      fetch(`${serverUrl}/api/partial-save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -225,7 +291,7 @@ async function appendInteractions(msg) {
 }
 
 async function captureSnapshot(msg, sender) {
-  return withSessionWrite(async () => {
+  return withSnapshotWrite(async () => {
     const data = await chrome.storage.local.get([ACTIVE_SESSION_KEY, 'serverUrl']);
     const session = data[ACTIVE_SESSION_KEY];
     if (!session) return { ok: false, error: 'No active session' };
@@ -260,14 +326,20 @@ async function captureSnapshot(msg, sender) {
     });
     if (!response.ok) throw new Error(`Snapshot upload failed: ${response.status}`);
 
-    session.snapshotCount += 1;
-    session.lastSnapshotAt = now;
-    await chrome.storage.local.set({ [ACTIVE_SESSION_KEY]: session });
+    await withSessionWrite(async () => {
+      const latestData = await chrome.storage.local.get([ACTIVE_SESSION_KEY]);
+      const updated = UiRaterTaskSession.mergeSnapshotProgress(
+        latestData[ACTIVE_SESSION_KEY], session.sessionId, session.snapshotCount + 1, now
+      );
+      // Never resurrect a finalized session or overwrite interactions that arrived
+      // while the screenshot upload was in flight.
+      if (updated) await chrome.storage.local.set({ [ACTIVE_SESSION_KEY]: updated });
+    });
     return { ok: true, snapshotId };
   });
 }
 
-async function completeTask(msg) {
+async function finishAttemptEvidence(msg) {
   const data = await chrome.storage.local.get([
     ACTIVE_SESSION_KEY, 'participantId', 'serverUrl', 'currentTaskIndex', 'tasks',
   ]);
@@ -277,15 +349,42 @@ async function completeTask(msg) {
   const serverUrl = data.serverUrl || DEFAULT_SERVER;
   const taskIndex = (data.currentTaskIndex || 0) + 1;
   const participantId = data.participantId;
+  await setWorkflow({
+    phase: 'finalizing_evidence',
+    sessionId: session.sessionId,
+    runId: session.runId,
+    assignmentId: session.assignmentId,
+    attemptId: session.attemptId,
+    attemptNumber: session.attemptNumber,
+    intendedOutcome: msg.outcome,
+    reason: msg.reason,
+    viewStart: session.viewStart || msg.viewStart,
+    durationMs: msg.durationMs || 0,
+    finalFlushStatus: msg.finalFlushStatus,
+    finalFlushError: msg.finalFlushError,
+    lastError: undefined,
+  });
 
   const managed = {
     runId: session.runId, assignmentId: session.assignmentId, attemptId: session.attemptId,
   };
   const recordingResult = await stopRecording(serverUrl, participantId, taskIndex, managed);
+  let recordingStatus = 'saved';
+  let recordingError;
   if (!recordingResult.ok) {
-    throw new Error(`Recording upload failed: ${recordingResult.error || 'unknown error'}`);
+    recordingError = recordingResult.error || 'Recording upload failed';
+    if (msg.outcome === 'recording_problem' && recordingResult.retryable !== true) {
+      // No recorder or pending blob remains to retry. Keep the other evidence and
+      // make the missing video explicit instead of trapping the participant.
+      recordingStatus = 'missing';
+    } else {
+      await setWorkflow({ lastError: recordingError });
+      throw new Error(`Recording upload failed: ${recordingError}`);
+    }
   }
 
+  await snapshotWriteLock;
+  await sessionWriteLock;
   const latest = await chrome.storage.local.get([ACTIVE_SESSION_KEY]);
   const finalSession = latest[ACTIVE_SESSION_KEY] || session;
   const res = await fetch(`${serverUrl}/api/complete-task`, {
@@ -302,54 +401,173 @@ async function completeTask(msg) {
       assignmentId: finalSession.assignmentId,
       attemptId: finalSession.attemptId,
       attemptNumber: finalSession.attemptNumber,
+      recording_status: recordingStatus,
+      recording_error: recordingError,
+      final_flush_status: msg.finalFlushStatus || 'complete',
+      final_flush_error: msg.finalFlushError,
     }),
   });
-  if (!res.ok) throw new Error(`Server error: ${res.status}`);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    await setWorkflow({ lastError: body.error || `Server error: ${res.status}` });
+    throw new Error(body.error || `Server error: ${res.status}`);
+  }
 
-  await chrome.storage.local.remove([ACTIVE_SESSION_KEY, '_sessionId']);
-  const nextIndex = taskIndex;
-  if (nextIndex < data.tasks.length) await chrome.storage.local.set({ currentTaskIndex: nextIndex });
-  return { ok: true, sessionId: finalSession.sessionId, finished: nextIndex >= data.tasks.length };
+  const attemptIdentity = {
+    participantId,
+    runId: finalSession.runId,
+    assignmentId: finalSession.assignmentId,
+    attemptId: finalSession.attemptId,
+    attemptNumber: finalSession.attemptNumber,
+    sessionId: finalSession.sessionId,
+  };
+  if (!body.pendingOutcome) {
+    let refreshed = null;
+    try {
+      const taskResponse = await fetch(
+        `${serverUrl}/api/tasks?participantId=${encodeURIComponent(participantId)}`
+          + `&runId=${encodeURIComponent(finalSession.runId)}`
+      );
+      if (taskResponse.ok) refreshed = await taskResponse.json();
+    } catch { /* the canonical outcome is already saved */ }
+    if (refreshed?.tasks) {
+      await chrome.storage.local.set({
+        tasks: refreshed.tasks, currentTaskIndex: refreshed.currentTaskIndex,
+      });
+    }
+    await chrome.storage.local.remove([
+      ACTIVE_SESSION_KEY, WORKFLOW_KEY, '_sessionId', '_originTime', '_viewStart',
+      '_taskTabId', '_pendingTaskTabId', '_tracking',
+    ]);
+    return {
+      ok: true, finalized: true, attemptStatus: body.attemptStatus, outcome: body.outcome,
+      currentTaskIndex: refreshed?.currentTaskIndex,
+      finished: refreshed ? refreshed.currentTaskIndex >= refreshed.tasks.length : false,
+    };
+  }
+  await chrome.storage.local.set({
+    _tracking: false,
+    [WORKFLOW_KEY]: {
+      phase: 'awaiting_outcome',
+      ...attemptIdentity,
+      intendedOutcome: msg.outcome,
+      reason: msg.reason,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  await chrome.storage.local.remove([
+    ACTIVE_SESSION_KEY, '_sessionId', '_originTime', '_viewStart', '_taskTabId', '_pendingTaskTabId',
+  ]);
+  return {
+    ok: true,
+    sessionId: finalSession.sessionId,
+    attemptStatus: body.attemptStatus,
+    pendingOutcome: true,
+  };
 }
 
-async function invalidateCurrentAttempt() {
-  const data = await chrome.storage.local.get([
-    ACTIVE_SESSION_KEY, 'participantId', 'serverUrl', 'currentTaskIndex', 'tasks', 'runId',
-  ]);
+async function prepareFinalization(msg) {
+  const data = await chrome.storage.local.get([ACTIVE_SESSION_KEY]);
   const session = data[ACTIVE_SESSION_KEY];
-  if (!session?.attemptId) throw new Error('No active attempt');
-  const serverUrl = data.serverUrl || DEFAULT_SERVER;
-  const taskIndex = (data.currentTaskIndex || 0) + 1;
-  await fetch(`${serverUrl}/api/partial-save`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sessionId: session.sessionId, participantId: data.participantId, trialIndex: taskIndex,
-      view_start: session.viewStart, interactions: session.interactions,
-      runId: session.runId, assignmentId: session.assignmentId,
-      attemptId: session.attemptId, attemptNumber: session.attemptNumber,
-    }),
-  }).catch(() => {});
-  const recordingResult = await stopRecording(serverUrl, data.participantId, taskIndex, {
-    runId: session.runId, assignmentId: session.assignmentId, attemptId: session.attemptId,
+  if (!session) throw new Error('No active attempt to finalize');
+  await setWorkflow({
+    phase: 'finalizing_evidence', sessionId: session.sessionId,
+    runId: session.runId, assignmentId: session.assignmentId,
+    attemptId: session.attemptId, attemptNumber: session.attemptNumber,
+    intendedOutcome: msg.outcome, reason: msg.reason,
+    viewStart: msg.viewStart || session.viewStart, durationMs: msg.durationMs || 0,
+    finalFlushStatus: msg.finalFlushStatus, finalFlushError: msg.finalFlushError,
+    lastError: undefined,
   });
-  if (!recordingResult.ok) throw new Error(recordingResult.error || 'Recording upload failed');
-  const response = await fetch(`${serverUrl}/api/attempts/${encodeURIComponent(session.attemptId)}/invalidate`, {
+  return { ok: true };
+}
+
+async function submitAttemptOutcome(outcome, reason) {
+  const data = await chrome.storage.local.get([
+    'serverUrl', 'tasks', 'currentTaskIndex', WORKFLOW_KEY,
+  ]);
+  const pending = data[WORKFLOW_KEY];
+  if (!pending?.attemptId) throw new Error('No attempt is waiting for an outcome');
+  const intendedOutcome = data[WORKFLOW_KEY]?.intendedOutcome;
+  if (intendedOutcome && intendedOutcome !== outcome) {
+    throw new Error(`Outcome ${intendedOutcome} is already being submitted`);
+  }
+  await setWorkflow({
+    phase: 'submitting_outcome',
+    intendedOutcome: outcome, reason, lastError: undefined,
+  });
+  const serverUrl = data.serverUrl || DEFAULT_SERVER;
+  const response = await fetch(`${serverUrl}/api/attempts/${encodeURIComponent(pending.attemptId)}/outcome`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      participantId: data.participantId, runId: session.runId,
-      assignmentId: session.assignmentId, reason: 'participant_retry',
+      participantId: pending.participantId,
+      runId: pending.runId,
+      assignmentId: pending.assignmentId,
+      outcome,
+      reason,
     }),
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Could not invalidate attempt: ${response.status}`);
+  if (!response.ok) {
+    await setWorkflow({ lastError: body.error || `Could not save outcome: ${response.status}` });
+    throw new Error(body.error || `Could not save outcome: ${response.status}`);
+  }
+  const tasks = Array.isArray(data.tasks) ? [...data.tasks] : [];
+  const currentIndex = data.currentTaskIndex || 0;
+  if (tasks[currentIndex]) {
+    tasks[currentIndex] = {
+      ...tasks[currentIndex],
+      status: body.task.status,
+      outcome: body.task.outcome,
+      reason: body.task.reason,
+      accepted_attempt_id: body.task.accepted_attempt_id,
+    };
+  }
+  let nextIndex = currentIndex;
+  if (body.advance) {
+    nextIndex += 1;
+    while (nextIndex < tasks.length && tasks[nextIndex]?.status !== 'pending') nextIndex += 1;
+  }
+  await chrome.storage.local.set({ tasks, currentTaskIndex: nextIndex });
+  await chrome.storage.local.remove([
+    WORKFLOW_KEY, ACTIVE_SESSION_KEY, '_tracking', '_sessionId', '_originTime',
+    '_viewStart', '_taskTabId',
+  ]);
+  return {
+    ok: true,
+    outcome,
+    advance: body.advance,
+    retry: body.retry,
+    runCompleted: body.runCompleted,
+    currentTaskIndex: nextIndex,
+    finished: body.runCompleted || nextIndex >= tasks.length,
+  };
+}
+
+async function finishWithOutcome(msg) {
+  const stored = await chrome.storage.local.get([WORKFLOW_KEY]);
+  const phase = stored[WORKFLOW_KEY]?.phase;
+  await setWorkflow({ intendedOutcome: msg.outcome, reason: msg.reason });
+  if (!['awaiting_outcome', 'awaiting_retry_choice', 'submitting_outcome'].includes(phase)) {
+    await finishAttemptEvidence(msg);
+  }
+  return submitAttemptOutcome(msg.outcome, msg.reason);
+}
+
+async function setRetryChoice(reason) {
+  const data = await chrome.storage.local.get([WORKFLOW_KEY]);
+  const workflow = data[WORKFLOW_KEY];
+  if (workflow?.phase !== 'awaiting_outcome' || !workflow.attemptId) {
+    throw new Error('No attempt is waiting for a retry decision');
+  }
+  await setWorkflow({
+    phase: 'awaiting_retry_choice', reason,
+    intendedOutcome: undefined, lastError: undefined,
+  });
   return { ok: true };
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === 'GET_STATE') {
-    chrome.storage.local.get(['participantId', 'serverUrl', 'tasks', 'currentTaskIndex', 'runId'], sendResponse);
-    return true;
-  }
   if (msg.type === 'APPEND_INTERACTIONS') {
     appendInteractions(msg).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -359,22 +577,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'START_TASK_FLOW') {
-    startTaskFlow(msg).then((result) => sendResponse({ ok: true, ...result }))
+    withWorkflowOperation(() => startTaskFlow(msg)).then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
   if (msg.type === 'COMPLETE_TASK') {
-    completeTask(msg).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
-    return true;
-  }
-  if (msg.type === 'SKIP_TASK') {
-    invalidateCurrentAttempt().then(sendResponse)
+    withWorkflowOperation(() => finishAttemptEvidence(msg)).then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
-  if (msg.type === 'CLEAR_INTERACTIONS') {
-    chrome.storage.local.remove([ACTIVE_SESSION_KEY, '_sessionId']);
-    return false;
+  if (msg.type === 'PREPARE_FINALIZATION') {
+    withWorkflowOperation(() => prepareFinalization(msg)).then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (msg.type === 'SUBMIT_OUTCOME') {
+    withWorkflowOperation(() => submitAttemptOutcome(msg.outcome, msg.reason)).then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (msg.type === 'FINISH_WITH_OUTCOME') {
+    withWorkflowOperation(() => finishWithOutcome(msg)).then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (msg.type === 'SET_RETRY_CHOICE') {
+    withWorkflowOperation(() => setRetryChoice(msg.reason)).then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
   }
   return false;
 });

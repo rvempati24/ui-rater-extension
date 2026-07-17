@@ -4,7 +4,6 @@
   "export_mode": "accepted",
   "participants_dir": "data/participants",
   "sync_state_dir": "data/sync-state",
-  "sync_queue_dir": "data/sync-queue",
   "keep_local_export": true,
   "local_export_dir": "exports/ux-task-trace",
   "upload_hf": false,

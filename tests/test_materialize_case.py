@@ -21,6 +21,40 @@ RUNNER_SPEC.loader.exec_module(run_agent_analysis)
 
 
 class MaterializeCaseTests(unittest.TestCase):
+    def test_audit_rejects_unknown_status_and_missing_trace_but_allows_missing_video(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, attempt = make_attempt(root, status="invalidated")
+            source = root / "source"
+            source.mkdir()
+            metadata = json.loads((attempt / "attempt.json").read_text())
+            metadata["status"] = "garbage"
+            (attempt / "attempt.json").write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, "not materializable"):
+                materialize_case.materialize(attempt, root / "bad", source, {}, audit=True)
+            metadata["status"] = "invalidated"
+            (attempt / "attempt.json").write_text(json.dumps(metadata))
+            (attempt / "trace.json").unlink()
+            with self.assertRaisesRegex(ValueError, "trace.json"):
+                materialize_case.materialize(attempt, root / "no-trace", source, {}, audit=True)
+            (attempt / "trace.json").write_text(json.dumps({"interactions": []}))
+            (attempt / "recording.webm").unlink()
+            case = materialize_case.materialize(attempt, root / "no-video", source, {}, audit=True)
+            self.assertIsNone(case["evidence"]["recording"])
+
+    def test_default_rejects_failed_attempt_but_audit_allows_it(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, attempt = make_attempt(root, status="failed")
+            source = root / "source"
+            source.mkdir()
+            with self.assertRaisesRegex(ValueError, "accepted attempts"):
+                materialize_case.materialize(attempt, root / "default-case", source, {"source": "local"})
+            case = materialize_case.materialize(
+                attempt, root / "audit-case", source, {"source": "local"}, audit=True
+            )
+            self.assertEqual(case["attempt_status"], "failed")
+
     def test_materializes_evidence_source_and_contract(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -35,6 +69,7 @@ class MaterializeCaseTests(unittest.TestCase):
             destination = root / "case"
             case = materialize_case.materialize(attempt, destination, source, {"source": "local"})
             self.assertEqual(case["attempt_id"], "att_001")
+            self.assertEqual(case["task"]["source_position"], 5)
             self.assertTrue((destination / "website/package.json").exists())
             self.assertTrue((destination / "evidence/trace.json").exists())
             self.assertTrue((destination / "contract/finding.schema.json").exists())
