@@ -15,6 +15,22 @@ The current version includes:
 
 It intentionally does not include a database, job queue, multi-agent pipeline, autonomous repository exploration, automatic code changes, or privacy redaction for real websites. The model can receive a bounded read-only source snapshot, but it cannot browse or edit the repository. Use it only with the current synthetic test sites unless those safeguards are added.
 
+## Feature quick reference
+
+| Goal | Entry point |
+| --- | --- |
+| Start the default local server | `cd server && npm run dev` |
+| Select local website tasks | `npm run dev:tasks -- --website-dir <dir> --tasks-json <file> --tasks 1 3 5` |
+| Randomly select one or N tasks | add `--random` or `--random N`; add `--seed <value>` for reproducibility |
+| Select all or Mind2Web tasks | add `--all` or `--mind2web` |
+| Select/download an HF website | add `--hf-website <model/site/run>` or use `--hf-model`/`--hf-site`; omit all three for a random run |
+| Preview selection only | add `--dry-run` |
+| Prepare LLM input without a model call | `POST /api/sessions/<session-id>/analyze?prepareOnly=1` |
+| Run LLM analysis | `POST /api/sessions/<session-id>/analyze` |
+| Preview/export/upload traces | use `scripts/export-traces.ps1` on Windows or `scripts/export-traces.sh` on Linux/macOS |
+
+The sections below give complete commands, configuration, expected outputs, and validation steps for each entry point.
+
 ## Requirements
 
 - Chrome 116+
@@ -53,6 +69,33 @@ npm run dev
 3. Choose **Load unpacked** and select this repository directory, not `server/`.
 4. Enter the participant ID and `http://localhost:3000` in the popup.
 5. Complete a synthetic task and click **Done**.
+
+Reloading the extension does not clear its saved participant ID, task list, or current task position because these values live in `chrome.storage.local`. After a completed run, use **Start Over** to clear the browser-side state. During debugging, removing and loading the extension again also creates a clean browser-side state; it does not remove server recordings.
+
+## End-to-end local pilot
+
+Start the server with an explicit website, task file, and source task positions. PowerShell uses backticks for line continuation:
+
+```powershell
+cd server
+npm run dev:tasks -- `
+  --website-dir "../../../uxBench/allrecipes" `
+  --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" `
+  --tasks 1 3 5 `
+  --attempt pilot-001
+```
+
+The terminal should report `Selected 3/... tasks` and listen on `http://localhost:3000`. If Next.js switches to port 3001 or reports a `.next` lock, stop the older server before testing; otherwise the extension may still talk to an earlier one-task configuration.
+
+Use a valid participant ID that has not requested tasks from this server data directory. Before opening the extension, verify the server-side assignment:
+
+```powershell
+Invoke-RestMethod `
+  "http://localhost:3000/api/tasks?participantId=P004" |
+  ConvertTo-Json -Depth 5
+```
+
+The response should contain `totalTasks: 3`. Loading the extension afterwards should show `Task 1 of 3`.
 
 ## Select tasks when starting the server
 
@@ -101,6 +144,30 @@ Downloaded runs are cached under `server/.website-cache/` and their `dist/` file
 
 The commands are identical in PowerShell, Linux, and macOS. Task numbers always refer to positions in the source JSON, while the selected run is reindexed from 1. Use a new participant ID after changing a selection because an existing participant keeps the trials created on their first request. Public downloads need no token; `HF_TOKEN` is used automatically when the source dataset requires authentication.
 
+## Current participant behavior
+
+The current implementation is intentionally simple:
+
+- `server/config/participants.json` is an allow-list of valid participant IDs, not a participant database.
+- The first `GET /api/tasks?participantId=<id>` copies the current selected trials into `data/results.json` for that ID. Later requests return that stored assignment even if the server was restarted with a different task selection.
+- The popup stores the participant ID, assigned tasks, and current position in `chrome.storage.local`. Extension reloads preserve that state; **Start Over** clears only this browser-side copy.
+- `POST /api/reset` resets every participant in `data/results.json`; it is not a safe per-participant retry operation. It also does not remove canonical session folders or video files.
+
+Consequently, a participant ID is effectively tied to one persistent assignment in the baseline. It is not restricted to one human forever, but reusing it for a new run or recovering from a broken attempt is inconvenient. If the popup shows `Task 1 of 1` after starting with `--tasks 1 3 5`, first query `/api/tasks` as shown above: an old participant assignment or an old server process is usually the cause.
+
+## Proposed participant management v2
+
+The proposed model separates four concepts: a stable **participant**, a configured **run**, each **task assignment**, and one or more **attempts** for that task. A participant can have multiple runs; a task can be retried without deleting its earlier evidence; and at most one attempt is marked accepted for analysis/export.
+
+The operator workflow would be:
+
+1. Create or select a participant, then create a run that snapshots the website, tasks, seed, and launcher configuration.
+2. Record attempts under that run. A software failure creates attempt 2 rather than overwriting attempt 1.
+3. Mark bad attempts invalid with a reason, restore them if needed, or accept the good attempt. Invalid attempts remain auditable and are excluded from normal exports.
+4. Complete, abort, or archive the run. Use soft deletion by default; hard deletion requires an explicit attempt/session target and confirmation.
+
+The recommended MVP uses SQLite for participant/run/attempt metadata while keeping screenshots, traces, analyses, and WebM files in the existing session directories. A small local admin page/API should support creating runs, retrying tasks, invalidating/restoring attempts, and archiving participants. The full schema, lifecycle, API sketch, migration steps, and acceptance criteria are in [`docs/PARTICIPANT_MANAGEMENT_V2.md`](docs/PARTICIPANT_MANAGEMENT_V2.md). This v2 section is a design proposal, not functionality already present in the baseline.
+
 ## Session output
 
 ```text
@@ -117,6 +184,24 @@ data/sessions/<session-id>/
 ```
 
 The existing `data/results.json` and `data/recordings/` outputs remain for compatibility. Each completed trial in `results.json` also receives its `session_id`.
+
+## Inspect a completed recording
+
+Find the newest `data/sessions/<session-id>/` and check:
+
+- `manifest.json` has `status: "complete"`, the expected participant/task/website metadata, and event/snapshot counts;
+- `trace.json` contains increasing event sequence numbers, mouse/click events, and snapshot references that exist;
+- every `snapshots/sNNNN.jpg` has a matching `snapshots/sNNNN.json` metadata file;
+- the corresponding `data/recordings/<participant>-trial-<n>.webm` exists and is non-empty.
+
+Prepare the exact LLM input without making a model request:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  "http://localhost:3000/api/sessions/<session-id>/analyze?prepareOnly=1"
+```
+
+Then inspect `data/sessions/<session-id>/analysis/input.json`. Confirm its task text, interaction counts, snapshot IDs/paths, and optional source files match the session. The inspectable JSON records screenshot paths and metadata; during a real multimodal model call the analysis adapter reads those files and attaches their image data to the request.
 
 ## Run UX analysis
 
@@ -170,7 +255,7 @@ All model-facing code is isolated in `server/lib/ux-analysis/`:
 
 The HTTP request cannot supply a filesystem path. `UI_RATER_WEBSITE_SOURCE_DIR` must be configured by the server operator, and its final directory name must match the session's `app_id`. For the current pilot, that name is `20260625-090547-allrecipes`.
 
-## Suggested pilot test
+## Suggested LLM pilot test
 
 1. Start the server with `UI_RATER_WEBSITE_SOURCE_DIR` set to the Allrecipes source above.
 2. Reload the unpacked Chrome extension.
