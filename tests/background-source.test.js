@@ -11,6 +11,16 @@ test('task completion rejects a failed recording upload before completing the ta
   assert.match(source, /Recording upload failed/);
 });
 
+test('background creates and propagates stable run assignment and attempt IDs', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+
+  assert.match(source, /api\/assignments\/.*\/attempts/);
+  assert.match(source, /runId:\s*finalSession\.runId/);
+  assert.match(source, /assignmentId:\s*finalSession\.assignmentId/);
+  assert.match(source, /attemptId:\s*finalSession\.attemptId/);
+  assert.match(source, /api\/attempts\/.*\/invalidate/);
+});
+
 test('offscreen recorder keeps a failed upload available for retry', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'offscreen.js'), 'utf8');
 

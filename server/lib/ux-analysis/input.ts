@@ -40,8 +40,13 @@ export async function prepareAnalysisInput(sessionId: string) {
   await fs.mkdir(analysisDir, { recursive: true });
 
   const input: AnalysisInput = {
-    schema_version: 1,
+    schema_version: 2,
     session_id: sessionId,
+    participant_id: session.manifest.participant_id,
+    run_id: session.manifest.run_id,
+    assignment_id: session.manifest.assignment_id,
+    attempt_id: session.manifest.attempt_id,
+    attempt_number: session.manifest.attempt_number,
     app_id: session.manifest.app_id || '',
     task: session.manifest.task_prompt || '',
     site_url: session.manifest.site_url || '',
@@ -51,6 +56,7 @@ export async function prepareAnalysisInput(sessionId: string) {
     trace: selectedEvents.map(compactEvent),
     snapshots: session.snapshots.slice(0, 12),
     source: await collectSourceContext(undefined, session.manifest.app_id || ''),
+    website_provenance: session.manifest.website as unknown as Record<string, unknown> | undefined,
   };
   await fs.writeFile(path.join(analysisDir, 'input.json'), JSON.stringify(input, null, 2), 'utf8');
   return { analysisDir, input, session };

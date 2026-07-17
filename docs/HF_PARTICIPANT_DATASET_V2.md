@@ -2,7 +2,7 @@
 
 ## Decision
 
-The target layout for [`uxBench/ux-task-trace`](https://huggingface.co/datasets/uxBench/ux-task-trace) is participant-first. It replaces the earlier `model/website/run/attempt/user/session` hierarchy once participant management v2 is implemented.
+The implemented exporter layout for [`uxBench/ux-task-trace`](https://huggingface.co/datasets/uxBench/ux-task-trace) is participant-first. It replaces the earlier `model/website/run/attempt/user/session` hierarchy on the isolated `participant-v2` revision.
 
 Website and generator model remain important searchable metadata, but they do not own the trace. The stable ownership chain is:
 

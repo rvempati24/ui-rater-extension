@@ -37,10 +37,10 @@ async function startRecording(tabId) {
   });
 }
 
-async function stopRecording(serverUrl, participantId, taskIndex) {
+async function stopRecording(serverUrl, participantId, taskIndex, managed = {}) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({
-      type: 'STOP_RECORDING', serverUrl, participantId, taskIndex,
+      type: 'STOP_RECORDING', serverUrl, participantId, taskIndex, ...managed,
     }, (res) => {
       if (res?.ok) recordingTabId = null;
       resolve(res || { ok: false, error: 'Recorder did not respond' });
@@ -83,11 +83,29 @@ async function openPendingTask(createOptions) {
   return { status: 'pending', tabId: taskTab.id };
 }
 
-function createSession() {
-  return {
+async function createSession() {
+  const data = await chrome.storage.local.get(['participantId', 'serverUrl', 'runId', 'tasks', 'currentTaskIndex']);
+  const task = data.tasks?.[data.currentTaskIndex || 0];
+  if (!data.participantId || !data.runId || !task?.assignment_id) {
+    throw new Error('Participant run is not configured');
+  }
+  const session = {
     sessionId: crypto.randomUUID(),
     originTime: Date.now(),
     viewStart: new Date().toISOString(),
+  };
+  const response = await fetch(
+    `${data.serverUrl || DEFAULT_SERVER}/api/assignments/${encodeURIComponent(task.assignment_id)}/attempts`,
+    {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ participantId: data.participantId, runId: data.runId, sessionId: session.sessionId }),
+    }
+  );
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || `Could not create attempt: ${response.status}`);
+  return {
+    ...session, runId: data.runId, assignmentId: task.assignment_id,
+    attemptId: body.attempt.attempt_id, attemptNumber: body.attempt.attempt_number,
   };
 }
 
@@ -117,7 +135,7 @@ async function startTaskFlow(msg) {
   const result = await UiRaterTaskSession.beginRecordingOnTab({
     startRecording,
     createSession,
-    storeSession: async ({ sessionId, originTime, viewStart, taskTabId }) => {
+    storeSession: async ({ sessionId, originTime, viewStart, taskTabId, runId, assignmentId, attemptId, attemptNumber }) => {
       const taskTab = await chrome.tabs.get(taskTabId);
       await chrome.storage.local.set({
         _tracking: true,
@@ -135,6 +153,7 @@ async function startTaskFlow(msg) {
           nextEventSeq: 1,
           snapshotCount: 0,
           lastSnapshotAt: 0,
+          runId, assignmentId, attemptId, attemptNumber,
         },
       });
     },
@@ -143,9 +162,21 @@ async function startTaskFlow(msg) {
     }),
     stopTracking: (tabId) => sendTabMessage(tabId, { type: 'STOP_TRACKING' }),
     cancelRecording,
-    clearSession: () => chrome.storage.local.remove([
-      '_tracking', '_sessionId', '_originTime', '_viewStart', '_taskTabId', ACTIVE_SESSION_KEY,
-    ]),
+    clearSession: async (failedSession) => {
+      const data = await chrome.storage.local.get(['participantId', 'serverUrl']);
+      if (failedSession?.attemptId) {
+        await fetch(`${data.serverUrl || DEFAULT_SERVER}/api/attempts/${encodeURIComponent(failedSession.attemptId)}/invalidate`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            participantId: data.participantId, runId: failedSession.runId,
+            assignmentId: failedSession.assignmentId, reason: 'recording_start_failed',
+          }),
+        }).catch(() => {});
+      }
+      await chrome.storage.local.remove([
+        '_tracking', '_sessionId', '_originTime', '_viewStart', '_taskTabId', ACTIVE_SESSION_KEY,
+      ]);
+    },
   }, { tabId: plan.tabId });
 
   await chrome.storage.local.remove(['_pendingTaskTabId']);
@@ -182,6 +213,10 @@ async function appendInteractions(msg) {
           trialIndex: (data.currentTaskIndex || 0) + 1,
           view_start: session.viewStart,
           interactions: session.interactions,
+          runId: session.runId,
+          assignmentId: session.assignmentId,
+          attemptId: session.attemptId,
+          attemptNumber: session.attemptNumber,
         }),
       }).catch(() => {});
     }
@@ -243,7 +278,10 @@ async function completeTask(msg) {
   const taskIndex = (data.currentTaskIndex || 0) + 1;
   const participantId = data.participantId;
 
-  const recordingResult = await stopRecording(serverUrl, participantId, taskIndex);
+  const managed = {
+    runId: session.runId, assignmentId: session.assignmentId, attemptId: session.attemptId,
+  };
+  const recordingResult = await stopRecording(serverUrl, participantId, taskIndex, managed);
   if (!recordingResult.ok) {
     throw new Error(`Recording upload failed: ${recordingResult.error || 'unknown error'}`);
   }
@@ -260,6 +298,10 @@ async function completeTask(msg) {
       view_start: finalSession.viewStart || msg.viewStart,
       duration_ms: msg.durationMs || 0,
       interactions: finalSession.interactions,
+      runId: finalSession.runId,
+      assignmentId: finalSession.assignmentId,
+      attemptId: finalSession.attemptId,
+      attemptNumber: finalSession.attemptNumber,
     }),
   });
   if (!res.ok) throw new Error(`Server error: ${res.status}`);
@@ -270,9 +312,42 @@ async function completeTask(msg) {
   return { ok: true, sessionId: finalSession.sessionId, finished: nextIndex >= data.tasks.length };
 }
 
+async function invalidateCurrentAttempt() {
+  const data = await chrome.storage.local.get([
+    ACTIVE_SESSION_KEY, 'participantId', 'serverUrl', 'currentTaskIndex', 'tasks', 'runId',
+  ]);
+  const session = data[ACTIVE_SESSION_KEY];
+  if (!session?.attemptId) throw new Error('No active attempt');
+  const serverUrl = data.serverUrl || DEFAULT_SERVER;
+  const taskIndex = (data.currentTaskIndex || 0) + 1;
+  await fetch(`${serverUrl}/api/partial-save`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId: session.sessionId, participantId: data.participantId, trialIndex: taskIndex,
+      view_start: session.viewStart, interactions: session.interactions,
+      runId: session.runId, assignmentId: session.assignmentId,
+      attemptId: session.attemptId, attemptNumber: session.attemptNumber,
+    }),
+  }).catch(() => {});
+  const recordingResult = await stopRecording(serverUrl, data.participantId, taskIndex, {
+    runId: session.runId, assignmentId: session.assignmentId, attemptId: session.attemptId,
+  });
+  if (!recordingResult.ok) throw new Error(recordingResult.error || 'Recording upload failed');
+  const response = await fetch(`${serverUrl}/api/attempts/${encodeURIComponent(session.attemptId)}/invalidate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      participantId: data.participantId, runId: session.runId,
+      assignmentId: session.assignmentId, reason: 'participant_retry',
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || `Could not invalidate attempt: ${response.status}`);
+  return { ok: true };
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'GET_STATE') {
-    chrome.storage.local.get(['participantId', 'serverUrl', 'tasks', 'currentTaskIndex'], sendResponse);
+    chrome.storage.local.get(['participantId', 'serverUrl', 'tasks', 'currentTaskIndex', 'runId'], sendResponse);
     return true;
   }
   if (msg.type === 'APPEND_INTERACTIONS') {
@@ -293,11 +368,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'SKIP_TASK') {
-    chrome.storage.local.get(['serverUrl', 'participantId', 'currentTaskIndex'], async (data) => {
-      const taskIndex = (data.currentTaskIndex || 0) + 1;
-      await stopRecording(data.serverUrl || DEFAULT_SERVER, data.participantId, taskIndex);
-    });
-    return false;
+    invalidateCurrentAttempt().then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
   }
   if (msg.type === 'CLEAR_INTERACTIONS') {
     chrome.storage.local.remove([ACTIVE_SESSION_KEY, '_sessionId']);

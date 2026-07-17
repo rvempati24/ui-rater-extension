@@ -149,7 +149,7 @@ Validated outputs can be copied back under the attempt's `analysis/<analysis-id>
 
 ## CLI design
 
-Illustrative commands for the implementation phase:
+Implemented commands:
 
 ```bash
 # Materialize from local participant storage.
@@ -168,16 +168,16 @@ python scripts/run_agent_analysis.py \
   --adapter opencode
 ```
 
-These commands are a design contract, not currently implemented commands.
+The adapters require an installed/configured OpenCode or Claude CLI. The repository does not install either CLI or provide model credentials.
 
-## Recommended implementation order
+## Implementation layers
 
-1. **Identity/provenance:** implement participant/run/assignment/attempt IDs and freeze exact website provenance. Goal: every analysis case has stable join keys.
-2. **Participant HF exporter:** publish accepted attempts in the participant-v2 layout with checksums and indexes. Goal: establish the reproducible dataset baseline.
-3. **Materializer:** build and validate the same sandbox from either local storage or an exact HF commit. Goal: separate data acquisition from model execution.
-4. **Compact API input v2:** generate the current multimodal request from `case.json`. Goal: preserve a cheap baseline using the new dataset contract.
-5. **Coding-agent adapter:** add one read-only adapter, preferably OpenCode first if it matches the available CLI proxy. Goal: measure whether repository exploration improves recommendations before supporting multiple agents.
-6. **Output synchronization:** validate findings and optionally attach them as a new analysis artifact in HF. Goal: keep derived model output versioned without mutating evidence.
+1. **Identity/provenance (implemented):** participant/run/assignment/attempt IDs and frozen website provenance provide stable join keys.
+2. **Participant HF exporter (implemented):** accepted/audit export, checksums, indexes, revision selection, and sync state establish the dataset baseline.
+3. **Materializer (implemented):** the same sandbox can be built from local storage or an exact HF commit.
+4. **Compact API input v2 (implemented):** the existing multimodal input now carries stable IDs and website provenance.
+5. **Coding-agent adapters (implemented baseline):** OpenCode/Claude command adapters strip HF credentials and detect evidence/source mutations; actual network isolation remains a host/container responsibility.
+6. **Output synchronization (future):** agent output is local today; attaching validated derived analysis to HF is not automatic.
 
 Do not begin with a general-purpose agent runner. The first three steps establish stable evidence and source resolution, which both API and coding-agent experiments require.
 

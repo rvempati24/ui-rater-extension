@@ -2,7 +2,7 @@
 
 ## Status and boundary
 
-This document proposes the next participant-management layer. It is not implemented by the current baseline. The goal is to make retries, invalid data, repeated studies, and cleanup explicit without losing evidence or accidentally deleting unrelated recordings.
+The filesystem-backed MVP is implemented. It supports multiple runs, immutable attempts, discard/retry, accepted/invalidated state, local admin APIs, participant-v2 export, and legacy copying. A visual admin page, confirmed hard deletion, multi-process concurrency, and SQLite remain future work.
 
 ## Domain model
 
@@ -190,7 +190,7 @@ The extension-facing endpoints accept stable IDs rather than filesystem paths. A
 3. Add `run_id`, `assignment_id`, and `attempt_id` to new manifests while keeping current fields for compatibility.
 4. Update `/api/tasks` and the extension to operate on a selected run rather than treating `participant_id` as the assignment key.
 5. Add atomic JSON helpers, per-run locking, retry/invalidate/restore operations, and the local admin page.
-6. Replace the legacy website-first exporter with the participant-first layout on a dedicated `participant-v2` HF revision; select accepted attempts by default.
+6. Use the participant-first exporter on a dedicated `participant-v2` HF revision; select accepted attempts by default.
 7. Validate counts and checksums, then switch the dataset default revision only after existing consumers pass migration checks.
 8. Keep `data/results.json` as a read-only compatibility projection until downstream consumers move to participant folders.
 

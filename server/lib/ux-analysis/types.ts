@@ -15,8 +15,13 @@ export interface SourceContext {
 }
 
 export interface AnalysisInput {
-  schema_version: 1;
+  schema_version: 2;
   session_id: string;
+  participant_id?: string;
+  run_id?: string;
+  assignment_id?: string;
+  attempt_id?: string;
+  attempt_number?: number;
   app_id: string;
   task: string;
   site_url: string;
@@ -26,6 +31,7 @@ export interface AnalysisInput {
   trace: Array<Record<string, unknown>>;
   snapshots: SnapshotMetadata[];
   source: SourceContext;
+  website_provenance?: Record<string, unknown>;
 }
 
 export interface SourceCandidate {

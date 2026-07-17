@@ -1,8 +1,13 @@
 {
-  "sessions_dir": "data/sessions",
+  "schema_version": "2.0",
+  "layout": "participant-v2",
+  "export_mode": "accepted",
+  "participants_dir": "data/participants",
+  "sync_state_dir": "data/sync-state",
+  "sync_queue_dir": "data/sync-queue",
   "keep_local_export": true,
   "local_export_dir": "exports/ux-task-trace",
   "upload_hf": false,
   "hf_repo_id": "uxBench/ux-task-trace",
-  "hf_path_prefix": ""
+  "hf_revision": "participant-v2"
 }

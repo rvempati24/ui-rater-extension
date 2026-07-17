@@ -72,7 +72,7 @@
     } catch (error) {
       if (trackingAttempted) await deps.stopTracking(options.tabId).catch(() => {});
       if (recordingStarted) await deps.cancelRecording().catch(() => {});
-      if (sessionStored) await deps.clearSession().catch(() => {});
+      if (sessionStored) await deps.clearSession(session).catch(() => {});
       throw error;
     }
   }

@@ -12,58 +12,94 @@ export_traces = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(export_traces)
 
 
+def write_json(path: Path, value: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def make_attempt(root: Path, status="accepted") -> tuple[Path, Path]:
+    participants = root / "participants"
+    participant = participants / "P001"
+    run = participant / "runs" / "run_001"
+    task = run / "tasks" / "001-asg_001"
+    attempt = task / "attempts" / "001-att_001"
+    write_json(participant / "participant.json", {
+        "schema_version": 2, "participant_id": "P001", "status": "active",
+    })
+    write_json(run / "run.json", {
+        "schema_version": 2, "participant_id": "P001", "run_id": "run_001",
+        "status": "completed", "website": {"model": "model", "website": "site"},
+    })
+    write_json(task / "task.json", {
+        "schema_version": 2, "participant_id": "P001", "run_id": "run_001",
+        "assignment_id": "asg_001", "position": 1, "task_prompt": "Do task",
+        "accepted_attempt_id": "att_001" if status == "accepted" else None,
+    })
+    write_json(attempt / "attempt.json", {
+        "schema_version": 2, "participant_id": "P001", "run_id": "run_001",
+        "assignment_id": "asg_001", "attempt_id": "att_001", "attempt_number": 1,
+        "session_id": "session_001", "status": status,
+    })
+    write_json(attempt / "manifest.json", {"session_id": "session_001", "status": "complete"})
+    write_json(attempt / "trace.json", {"interactions": [{"seq": 1}]})
+    (attempt / "recording.webm").write_bytes(b"video")
+    write_json(attempt / "snapshots" / "s0001.json", {"snapshot_id": "s0001"})
+    (attempt / "snapshots" / "s0001.jpg").write_bytes(b"jpeg")
+    return participants, attempt
+
+
 class ExportTraceTests(unittest.TestCase):
-    def test_only_complete_sessions_are_exported(self):
+    def test_exports_participant_first_accepted_attempt(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            sessions = root / "sessions"
-            complete = sessions / "11111111-1111-4111-8111-111111111111"
-            partial = sessions / "22222222-2222-4222-8222-222222222222"
-            complete.mkdir(parents=True)
-            partial.mkdir(parents=True)
-            (complete / "manifest.json").write_text(
-                json.dumps({
-                    "session_id": complete.name,
-                    "status": "complete",
-                    "participant_id": "P001",
-                    "attempt_id": "attempt-002",
-                    "website": {
-                        "model": "deepseek-v4-flash-free",
-                        "website": "allrecipes",
-                        "run_id": "20260625-090547-allrecipes",
-                    },
-                }), encoding="utf-8"
-            )
-            (complete / "trace.json").write_text("{}", encoding="utf-8")
-            (partial / "manifest.json").write_text(
-                json.dumps({"session_id": partial.name, "status": "recording"}), encoding="utf-8"
-            )
-            (partial / "trace.json").write_text("{}", encoding="utf-8")
-
-            selected = export_traces.completed_sessions(sessions)
-            self.assertEqual(selected, [complete])
-
+            participants, _ = make_attempt(root)
             destination = root / "export"
-            export_traces.copy_sessions(selected, destination)
-            relative = Path(
-                "deepseek-v4-flash-free", "allrecipes", "20260625-090547-allrecipes",
-                "attempts", "attempt-002", "users", "P001", "sessions", complete.name,
-            )
-            self.assertTrue((destination / relative / "trace.json").exists())
-            self.assertFalse(any(destination.rglob(partial.name)))
-            self.assertEqual(len((destination / "sessions.jsonl").read_text().splitlines()), 1)
+            rows = export_traces.copy_participant_export(participants, destination)
+            target = destination / "participants/P001/runs/run_001/tasks/001-asg_001/attempts/001-att_001"
+            self.assertTrue((target / "trace.json").exists())
+            self.assertEqual(rows[0]["artifact_path"], target.relative_to(destination).as_posix())
+            self.assertIn("recording.webm", rows[0]["artifact_checksums"])
+            self.assertEqual(len((destination / "index/attempts.jsonl").read_text().splitlines()), 1)
 
-    def test_export_path_sanitizes_manifest_segments(self):
-        relative = export_traces.session_export_path({
-            "session_id": "abc",
-            "participant_id": "../user one",
-            "attempt_id": "pilot/1",
-            "app_id": "run",
-        })
-        self.assertEqual(
-            relative.as_posix(),
-            "unknown-model/unknown-site/run/attempts/pilot-1/users/user-one/sessions/abc",
-        )
+    def test_accepted_mode_excludes_invalidated_attempt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            participants, _ = make_attempt(root, status="invalidated")
+            rows = export_traces.copy_participant_export(participants, root / "accepted")
+            self.assertEqual(rows, [])
+            audit = export_traces.copy_participant_export(participants, root / "audit", mode="audit")
+            self.assertEqual(len(audit), 1)
+
+    def test_audit_mode_keeps_incomplete_invalidated_attempt_metadata(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            participants, attempt = make_attempt(root, status="invalidated")
+            (attempt / "manifest.json").unlink()
+            (attempt / "trace.json").unlink()
+            (attempt / "recording.webm").unlink()
+            rows = export_traces.copy_participant_export(participants, root / "audit", mode="audit")
+            self.assertFalse(rows[0]["artifact_complete"])
+
+    def test_missing_video_fails_validation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            participants, attempt = make_attempt(root)
+            (attempt / "recording.webm").unlink()
+            with self.assertRaisesRegex(ValueError, "recording.webm"):
+                export_traces.copy_participant_export(participants, root / "export")
+
+    def test_refuses_overlapping_or_unmarked_destination(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            participants, _ = make_attempt(root)
+            with self.assertRaisesRegex(ValueError, "overlap"):
+                export_traces.copy_participant_export(participants, participants)
+            destination = root / "existing"
+            destination.mkdir()
+            (destination / "important.txt").write_text("keep")
+            with self.assertRaisesRegex(ValueError, "Refusing"):
+                export_traces.copy_participant_export(participants, destination)
+            self.assertTrue((destination / "important.txt").exists())
 
 
 if __name__ == "__main__":

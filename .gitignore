@@ -152,6 +152,10 @@ data/
 data/recordings/*
 !data/recordings/.gitkeep
 exports/
+.cases/
+.case-cache/
+.smoke-*/
+server/.next-smoke/
 scripts/trace-export.local.json
 server/.runtime/
 server/.website-cache/

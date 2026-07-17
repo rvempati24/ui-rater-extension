@@ -143,6 +143,10 @@
         <div class="section-label">Server URL</div>
         <input type="text" id="serverInput" placeholder="https://ui-rater-production.up.railway.app">
       </div>
+      <label style="display:flex; gap:8px; align-items:center; font-size:12px; color:#4b5563;">
+        <input type="checkbox" id="newRunInput" style="width:auto;">
+        Start a new run instead of resuming the active run
+      </label>
       <button class="btn btn-primary" id="startBtn">Load Tasks</button>
       <div class="error hidden" id="setupError"></div>
     </div>
@@ -174,7 +178,7 @@
       </div>
       <div id="duringTrackBtns" class="btn-row hidden">
         <button class="btn btn-success" id="doneBtn">Done</button>
-        <button class="btn btn-danger" id="skipBtn">Skip</button>
+        <button class="btn btn-danger" id="skipBtn">Discard & Retry</button>
       </div>
     </div>
     <div class="error hidden" id="taskError"></div>

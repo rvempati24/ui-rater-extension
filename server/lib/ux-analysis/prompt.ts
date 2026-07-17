@@ -68,6 +68,7 @@ export function buildTextInput(input: AnalysisInput): string {
     `Task: ${input.task}`,
     `Site: ${input.site_url}`,
     `App: ${input.app_id}`,
+    `Evidence IDs: participant=${input.participant_id || 'unknown'}, run=${input.run_id || 'unknown'}, assignment=${input.assignment_id || 'unknown'}, attempt=${input.attempt_id || 'unknown'}, session=${input.session_id}`,
     `Duration: ${input.duration_ms} ms`,
     `Trace JSON:\n${JSON.stringify(input.trace)}`,
     input.source.status === 'loaded'

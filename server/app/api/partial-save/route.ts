@@ -6,7 +6,7 @@ import { saveSessionTrace } from '@/lib/sessions';
 export async function POST(req: NextRequest) {
   try {
     const body = JSON.parse(await req.text());
-    const { sessionId, participantId, trialIndex, view_start, interactions } = body;
+    const { sessionId, participantId, trialIndex, view_start, interactions, runId, assignmentId, attemptId, attemptNumber } = body;
 
     if (!participantId || typeof trialIndex !== 'number') {
       return NextResponse.json({ ok: true });
@@ -18,6 +18,10 @@ export async function POST(req: NextRequest) {
         trial_index: trialIndex,
         view_start,
         status: 'recording',
+        run_id: runId,
+        assignment_id: assignmentId,
+        attempt_id: attemptId,
+        attempt_number: attemptNumber,
       });
     }
 

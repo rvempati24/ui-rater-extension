@@ -7,11 +7,12 @@ let state = {
   serverUrl: DEFAULT_SERVER,
   tasks: null,
   currentTaskIndex: 0,
+  runId: '',
 };
 
 async function init() {
   const data = await chrome.storage.local.get([
-    'participantId', 'serverUrl', 'tasks', 'currentTaskIndex',
+    'participantId', 'serverUrl', 'tasks', 'currentTaskIndex', 'runId',
   ]);
 
   if (data.participantId && data.tasks) {
@@ -20,6 +21,7 @@ async function init() {
       serverUrl: data.serverUrl || DEFAULT_SERVER,
       tasks: data.tasks,
       currentTaskIndex: data.currentTaskIndex || 0,
+      runId: data.runId || '',
     };
     if (state.currentTaskIndex >= state.tasks.length) {
       showDone();
@@ -121,7 +123,11 @@ $('startBtn').addEventListener('click', async () => {
   $('startBtn').textContent = 'Loading…';
 
   try {
-    const res = await fetch(`${server}/api/tasks?participantId=${encodeURIComponent(pid)}`);
+    const startNewRun = $('newRunInput').checked;
+    const endpoint = startNewRun
+      ? `${server}/api/participants/${encodeURIComponent(pid)}/runs`
+      : `${server}/api/tasks?participantId=${encodeURIComponent(pid)}`;
+    const res = await fetch(endpoint, { method: startNewRun ? 'POST' : 'GET' });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || `Server returned ${res.status}`);
@@ -136,12 +142,14 @@ $('startBtn').addEventListener('click', async () => {
     state.serverUrl = server;
     state.tasks = data.tasks;
     state.currentTaskIndex = data.currentTaskIndex || 0;
+    state.runId = data.runId;
 
     await chrome.storage.local.set({
       participantId: pid,
       serverUrl: server,
       tasks: data.tasks,
       currentTaskIndex: state.currentTaskIndex,
+      runId: state.runId,
     });
 
     if (state.currentTaskIndex >= state.tasks.length) {
@@ -270,32 +278,29 @@ $('skipBtn').addEventListener('click', async () => {
       chrome.tabs.sendMessage(stored._taskTabId, { type: 'STOP_TRACKING' });
     }
   } catch { /* ignore */ }
-  chrome.runtime.sendMessage({ type: 'SKIP_TASK' });
+  const result = await sendRuntimeMessage({ type: 'SKIP_TASK' }).catch((error) => ({ ok: false, error: error.message }));
+  if (!result?.ok) {
+    showError('taskError', result?.error || 'Could not discard this attempt.');
+    return;
+  }
   chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
   await chrome.storage.local.remove([
     '_tracking', '_sessionId', '_originTime', '_viewStart', '_taskTabId', '_pendingTaskTabId',
     '_activeSession',
   ]);
 
-  state.currentTaskIndex++;
-  await chrome.storage.local.set({ currentTaskIndex: state.currentTaskIndex });
-
-  if (state.currentTaskIndex >= state.tasks.length) {
-    showDone();
-  } else {
-    showTask();
-  }
+  showTask();
 });
 
 // Reset
 $('resetBtn').addEventListener('click', async () => {
   await chrome.storage.local.remove([
-    'participantId', 'tasks', 'currentTaskIndex',
+    'participantId', 'tasks', 'currentTaskIndex', 'runId',
     '_tracking', '_sessionId', '_originTime', '_viewStart', '_taskTabId', '_pendingTaskTabId',
     '_activeSession',
   ]);
   chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
-  state = { participantId: '', serverUrl: state.serverUrl, tasks: null, currentTaskIndex: 0 };
+  state = { participantId: '', serverUrl: state.serverUrl, tasks: null, currentTaskIndex: 0, runId: '' };
   showSetup();
 });
 

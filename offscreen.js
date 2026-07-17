@@ -9,7 +9,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'STOP_RECORDING') {
-    stopRecording(msg.serverUrl, msg.participantId, msg.taskIndex)
+    stopRecording(msg.serverUrl, msg.participantId, msg.taskIndex, msg)
       .then((result) => sendResponse(result))
       .catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
@@ -47,7 +47,7 @@ async function startRecording(streamId) {
   recorder.start(1000);
 }
 
-async function stopRecording(serverUrl, participantId, taskIndex) {
+async function stopRecording(serverUrl, participantId, taskIndex, managed = {}) {
   if (recorder && recorder.state !== 'inactive') {
     await new Promise((resolve) => {
       recorder.onstop = () => {
@@ -65,7 +65,7 @@ async function stopRecording(serverUrl, participantId, taskIndex) {
   if (!serverUrl || !participantId || !taskIndex) {
     return { ok: false, error: 'Missing upload params' };
   }
-  const uploadKey = `${serverUrl}|${participantId}|${taskIndex}`;
+  const uploadKey = `${serverUrl}|${participantId}|${managed.attemptId || taskIndex}`;
   if (!pendingBlob) {
     if (lastUploadedTask === uploadKey) return { ok: true, alreadyUploaded: true };
     return { ok: false, error: 'Not recording' };
@@ -73,7 +73,11 @@ async function stopRecording(serverUrl, participantId, taskIndex) {
 
   try {
     const res = await fetch(
-      `${serverUrl}/api/upload-recording?participantId=${participantId}&taskIndex=${taskIndex}`,
+      `${serverUrl}/api/upload-recording?participantId=${encodeURIComponent(participantId)}`
+        + `&taskIndex=${encodeURIComponent(taskIndex)}`
+        + (managed.runId ? `&runId=${encodeURIComponent(managed.runId)}` : '')
+        + (managed.assignmentId ? `&assignmentId=${encodeURIComponent(managed.assignmentId)}` : '')
+        + (managed.attemptId ? `&attemptId=${encodeURIComponent(managed.attemptId)}` : ''),
       { method: 'POST', body: pendingBlob }
     );
     if (!res.ok) throw new Error(`Upload failed: ${res.status}`);

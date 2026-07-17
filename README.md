@@ -25,9 +25,13 @@ It intentionally does not include a database, job queue, multi-agent pipeline, a
 | Select all or Mind2Web tasks | add `--all` or `--mind2web` |
 | Select/download an HF website | add `--hf-website <model/site/run>` or use `--hf-model`/`--hf-site`; omit all three for a random run |
 | Preview selection only | add `--dry-run` |
+| Start another run for the same participant | check **Start a new run** in the extension |
+| Discard a broken recording and retry | click **Discard & Retry**; the invalidated attempt is retained |
 | Prepare LLM input without a model call | `POST /api/sessions/<session-id>/analyze?prepareOnly=1` |
 | Run LLM analysis | `POST /api/sessions/<session-id>/analyze` |
 | Preview/export/upload traces | use `scripts/export-traces.ps1` on Windows or `scripts/export-traces.sh` on Linux/macOS |
+| Build a coding-agent case | use `scripts/materialize-case.ps1` or `scripts/materialize-case.sh` |
+| Run OpenCode/Claude on a case | use `scripts/run-agent-analysis.ps1` or `scripts/run-agent-analysis.sh` |
 
 The sections below give complete commands, configuration, expected outputs, and validation steps for each entry point.
 
@@ -142,31 +146,49 @@ In the last command, the website and one task are both selected reproducibly. `-
 
 Downloaded runs are cached under `server/.website-cache/` and their `dist/` files are deployed under `server/public/apps/<run-id>/`. The launcher records repository, revision, commit SHA, `model/website/run-id`, source URL, file metadata, and pre-existing metadata filenames in `ui-rater-website.json`. A compact copy plus `attempt_id` is retained in each completed session manifest.
 
-The commands are identical in PowerShell, Linux, and macOS. Task numbers always refer to positions in the source JSON, while the selected run is reindexed from 1. Use a new participant ID after changing a selection because an existing participant keeps the trials created on their first request. Public downloads need no token; `HF_TOKEN` is used automatically when the source dataset requires authentication.
+The commands are identical in PowerShell, Linux, and macOS. Task numbers always refer to positions in the source JSON, while the selected run is reindexed from 1. In the extension, check **Start a new run** after changing the selection; leave it unchecked to resume that participant's active run. Public downloads need no token; `HF_TOKEN` is used automatically when the source dataset requires authentication.
 
-## Current participant behavior
+## Participant management v2
 
-The current implementation is intentionally simple:
+The implemented MVP separates a stable **participant**, a configured **run**, each **task assignment**, and one or more **attempts** for that task. A participant can have multiple runs; a task can be retried without deleting its earlier evidence; and at most one attempt is accepted for analysis/export.
 
-- `server/config/participants.json` is an allow-list of valid participant IDs, not a participant database.
-- The first `GET /api/tasks?participantId=<id>` copies the current selected trials into `data/results.json` for that ID. Later requests return that stored assignment even if the server was restarted with a different task selection.
-- The popup stores the participant ID, assigned tasks, and current position in `chrome.storage.local`. Extension reloads preserve that state; **Start Over** clears only this browser-side copy.
-- `POST /api/reset` resets every participant in `data/results.json`; it is not a safe per-participant retry operation. It also does not remove canonical session folders or video files.
-
-Consequently, a participant ID is effectively tied to one persistent assignment in the baseline. It is not restricted to one human forever, but reusing it for a new run or recovering from a broken attempt is inconvenient. If the popup shows `Task 1 of 1` after starting with `--tasks 1 3 5`, first query `/api/tasks` as shown above: an old participant assignment or an old server process is usually the cause.
-
-## Proposed participant management v2
-
-The proposed model separates four concepts: a stable **participant**, a configured **run**, each **task assignment**, and one or more **attempts** for that task. A participant can have multiple runs; a task can be retried without deleting its earlier evidence; and at most one attempt is marked accepted for analysis/export.
-
-The operator workflow would be:
+The operator workflow is:
 
 1. Create or select a participant, then create a run that snapshots the website, tasks, seed, and launcher configuration.
 2. Record attempts under that run. A software failure creates attempt 2 rather than overwriting attempt 1.
 3. Mark bad attempts invalid with a reason, restore them if needed, or accept the good attempt. Invalid attempts remain auditable and are excluded from normal exports.
 4. Complete, abort, or archive the run. Use soft deletion by default; hard deletion requires an explicit attempt/session target and confirmation.
 
-The recommended MVP uses a participant-first local folder tree for metadata and evidence, with rebuildable JSONL indexes and explicit Hugging Face synchronization. SQLite is deferred until multi-process concurrency or scale requires stronger transactions. A small local admin page/API should support creating runs, retrying tasks, invalidating/restoring attempts, and archiving participants. The full local structure, lifecycle, API sketch, migration steps, and acceptance criteria are in [`docs/PARTICIPANT_MANAGEMENT_V2.md`](docs/PARTICIPANT_MANAGEMENT_V2.md). The corresponding participant-first Hugging Face structure and synchronization rules are in [`docs/HF_PARTICIPANT_DATASET_V2.md`](docs/HF_PARTICIPANT_DATASET_V2.md). The reproducible dataset-to-LLM/coding-agent input contract is in [`docs/LLM_AGENT_SANDBOX_V2.md`](docs/LLM_AGENT_SANDBOX_V2.md). These v2 sections are design proposals, not functionality already present in the baseline.
+The extension's **Discard & Retry** action invalidates the active attempt, preserves its evidence, and keeps the same task selected. **Start Over** still clears only browser state. The local source of truth is `data/participants/`; `data/results.json`, `data/sessions/`, and `data/recordings/` continue as compatibility outputs. SQLite is deferred until multi-process concurrency or scale requires stronger transactions.
+
+The APIs support creating/listing runs and changing participant, run, or attempt states. For example, list participants and one participant's runs:
+
+```powershell
+Invoke-RestMethod http://localhost:3000/api/admin/participants
+Invoke-RestMethod http://localhost:3000/api/participants/P004/runs
+```
+
+Invalidate, restore, or accept an attempt with `PATCH /api/admin/attempts/<attempt-id>` and a JSON body containing `participantId`, `runId`, `assignmentId`, `action`, and optional `reason`. Participant status accepts `active`, `disabled`, or `archived`; run status accepts `active`, `aborted`, or `archived`. These admin APIs are intended for the local single-operator pilot.
+
+```powershell
+$body = @{
+  participantId = "P004"; runId = "<run-id>"; assignmentId = "<assignment-id>"
+  action = "invalidate"; reason = "browser crashed"
+} | ConvertTo-Json
+Invoke-RestMethod -Method Patch -ContentType "application/json" `
+  -Body $body "http://localhost:3000/api/admin/attempts/<attempt-id>"
+```
+
+```bash
+curl -X PATCH http://localhost:3000/api/admin/participants/P004 \
+  -H 'Content-Type: application/json' -d '{"status":"archived"}'
+curl -X PATCH http://localhost:3000/api/admin/runs/<run-id> \
+  -H 'Content-Type: application/json' -d '{"participantId":"P004","status":"aborted"}'
+```
+
+When the server is not accessed through localhost, set `UI_RATER_ADMIN_TOKEN` and send `Authorization: Bearer <token>` to admin endpoints.
+
+The detailed structures and boundaries are in [`docs/PARTICIPANT_MANAGEMENT_V2.md`](docs/PARTICIPANT_MANAGEMENT_V2.md), [`docs/HF_PARTICIPANT_DATASET_V2.md`](docs/HF_PARTICIPANT_DATASET_V2.md), and [`docs/LLM_AGENT_SANDBOX_V2.md`](docs/LLM_AGENT_SANDBOX_V2.md).
 
 ## Session output
 
@@ -255,7 +277,7 @@ All model-facing code is isolated in `server/lib/ux-analysis/`:
 
 The HTTP request cannot supply a filesystem path. `UI_RATER_WEBSITE_SOURCE_DIR` must be configured by the server operator, and its final directory name must match the session's `app_id`. For the current pilot, that name is `20260625-090547-allrecipes`.
 
-## Proposed dataset-to-agent analysis
+## Dataset-to-agent analysis
 
 The v2 analysis flow uses `uxBench/ux-task-trace` as a reproducible evidence baseline. It selects one accepted attempt, obtains exact website provenance from its parent `run.json`, downloads or reuses the matching website source revision, validates checksums, and materializes a sandbox:
 
@@ -267,7 +289,36 @@ contract/   # lean instructions and output schema
 output/     # the agent's only writable directory
 ```
 
-The same case supports two comparison conditions: the existing compact multimodal API baseline, or a read-only OpenCode/Claude Code-style agent that can search the complete source tree. The agent is not given HF credentials, network access, or permission to edit the website. Every output records the trace-dataset commit and source commit for reproducibility. See [`docs/LLM_AGENT_SANDBOX_V2.md`](docs/LLM_AGENT_SANDBOX_V2.md) for the selection, source-resolution, sandbox, CLI, and validation contracts. The materializer and agent adapters are not implemented yet.
+The same case supports two comparison conditions: the existing compact multimodal API baseline, or an OpenCode/Claude Code-style agent that can search the complete source tree. The adapter strips HF credentials, marks evidence/source read-only where the OS supports it, and rejects output if their before/after digests differ. Network isolation still depends on the host/container running the CLI. Every output records the trace-dataset commit and source commit for reproducibility.
+
+Materialize a local accepted attempt on Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\materialize-case.ps1 `
+  -AttemptId <attempt-id> -Output .cases\<attempt-id> `
+  -WebsiteSource D:\path\to\exact\website-source
+```
+
+Materialize the same attempt from an exact HF revision on Linux/macOS:
+
+```bash
+sh scripts/materialize-case.sh \
+  --hf-repo uxBench/ux-task-trace --hf-revision participant-v2 \
+  --attempt-id <attempt-id> --output .cases/<attempt-id>
+```
+
+Run an installed agent CLI:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run-agent-analysis.ps1 `
+  -Case .cases\<attempt-id> -Adapter opencode
+```
+
+```bash
+sh scripts/run-agent-analysis.sh --case .cases/<attempt-id> --adapter claude
+```
+
+Use `UI_RATER_OPENCODE_COMMAND` or `UI_RATER_CLAUDE_COMMAND` when the CLI proxy needs a custom command prefix. The adapter passes only a small environment allow-list; add a required proxy variable explicitly with the Python entry point's repeatable `--pass-env NAME` option. See [`docs/LLM_AGENT_SANDBOX_V2.md`](docs/LLM_AGENT_SANDBOX_V2.md) for the full contract.
 
 ## Suggested LLM pilot test
 
@@ -283,50 +334,40 @@ The pilot succeeds at the infrastructure level when every accepted finding cites
 
 ## Configure trace export
 
-> **Layout transition:** the current export script still implements the legacy website-first hierarchy shown below. It should not be used to populate the new canonical participant dataset. Keep `upload_hf: false` while validating locally until the participant-v2 exporter is implemented. The replacement design uses `participant -> run -> task assignment -> attempt` and is specified in [`docs/HF_PARTICIPANT_DATASET_V2.md`](docs/HF_PARTICIPANT_DATASET_V2.md).
-
 Copy `scripts/trace-export.example.json` to a local config file and edit it:
 
 ```json
 {
-  "sessions_dir": "data/sessions",
+  "schema_version": "2.0",
+  "layout": "participant-v2",
+  "export_mode": "accepted",
+  "participants_dir": "data/participants",
+  "sync_state_dir": "data/sync-state",
+  "sync_queue_dir": "data/sync-queue",
   "keep_local_export": true,
   "local_export_dir": "exports/ux-task-trace",
   "upload_hf": false,
   "hf_repo_id": "uxBench/ux-task-trace",
-  "hf_path_prefix": ""
+  "hf_revision": "participant-v2"
 }
 ```
 
 The settings mean:
 
-- `sessions_dir`: source containing canonical session directories;
+- `export_mode`: `accepted` exports completed runs and accepted attempts; `audit` also includes failed/invalidated attempts;
+- `participants_dir`: participant-v2 local source of truth;
+- `sync_state_dir` and `sync_queue_dir`: local HF synchronization bookkeeping;
 - `keep_local_export`: create an additional persistent export package;
 - `local_export_dir`: path for that package;
 - `upload_hf`: enable a live Hugging Face write;
 - `hf_repo_id`: dataset repository, default `uxBench/ux-task-trace`;
-- `hf_path_prefix`: optional directory above the structured hierarchy; empty by default.
+- `hf_revision`: isolated HF dataset revision, default `participant-v2`.
 
-Relative paths are resolved from the extension repository root. Environment variables can override the config: `UI_RATER_SESSIONS_DIR`, `UI_RATER_KEEP_LOCAL_EXPORT`, `UI_RATER_LOCAL_EXPORT_DIR`, `UI_RATER_UPLOAD_HF`, `HF_DATASET_REPO`, and `HF_PATH_PREFIX`.
+Relative paths are resolved from the extension repository root. Environment variables can override the config: `UI_RATER_PARTICIPANTS_DIR`, `UI_RATER_KEEP_LOCAL_EXPORT`, `UI_RATER_LOCAL_EXPORT_DIR`, `UI_RATER_UPLOAD_HF`, `HF_DATASET_REPO`, and `HF_DATASET_REVISION`.
 
-The exporter processes only sessions whose manifest status is `complete`. It never automatically deletes the canonical session directory. When `keep_local_export=false` and upload is enabled, it uses a temporary staging directory and retains no additional export copy.
+The exporter validates IDs, statuses, manifest/session linkage, non-empty trace/video, screenshot pairs, and SHA-256 checksums. It never deletes canonical participant data. On a successful HF commit it writes local sync state and removes that run's retryable sync-queue file.
 
-The current legacy exporter uses this layout for backward compatibility:
-
-```text
-<model>/<website>/<run-id>/
-  attempts/<attempt-id>/
-    users/<participant-id>/
-      sessions/<session-id>/
-        manifest.json
-        trace.json
-        snapshots/
-        analysis/
-```
-
-This legacy layout preserves the same first three levels as `website-generation`. `sessions.jsonl` at the export root records every manifest and its exact `export_path`. Older sessions without website metadata are placed under explicit `unknown-model/unknown-site` fallback segments instead of being discarded.
-
-The participant-v2 target replaces it with:
+The exported layout is:
 
 ```text
 participants/<participant-id>/
@@ -341,7 +382,16 @@ participants/<participant-id>/
         analysis/
 ```
 
-Website/model provenance moves into `run.json` and root query indexes. The default HF export contains completed runs and accepted attempts; audit mode may include failed or invalidated attempts with their status and reason.
+Website/model provenance moves into `run.json` and root query indexes. The default HF export contains completed runs and accepted attempts; audit mode may include failed or invalidated attempts with their status, reason, and `artifact_complete` flag when a failure happened before all evidence existed.
+
+Before the first v2 export, preview or copy legacy data without deleting it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\migrate-legacy-participants.ps1 -DataDir data
+powershell -ExecutionPolicy Bypass -File scripts\migrate-legacy-participants.ps1 -DataDir data -Apply
+```
+
+Linux/macOS uses `sh scripts/migrate-legacy-participants.sh --data-dir data` and adds `--apply` for the copy. Existing `results.json`, sessions, and recordings are retained.
 
 ## Export on Windows
 
@@ -391,6 +441,18 @@ sh scripts/export-traces.sh --config scripts/trace-export.local.json --upload-hf
 ```
 
 Hugging Face upload is disabled by default. It is never run by task completion or by the server test suite.
+
+After an upload, compare local attempt checksums with the exact HF revision:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\reconcile-hf.ps1
+```
+
+```bash
+sh scripts/reconcile-hf.sh --hf-repo uxBench/ux-task-trace --hf-revision participant-v2
+```
+
+Both commands are read-only. They return a non-zero exit code for missing or stale attempts.
 
 ## Development checks
 

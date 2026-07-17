@@ -59,7 +59,7 @@ export interface Trial {
 }
 
 export interface SessionManifest {
-  schema_version: 1;
+  schema_version: 1 | 2;
   session_id: string;
   status: 'recording' | 'complete';
   participant_id?: string;
@@ -73,6 +73,9 @@ export interface SessionManifest {
   snapshot_count?: number;
   completed_at?: string;
   attempt_id?: string;
+  run_id?: string;
+  assignment_id?: string;
+  attempt_number?: number;
   website?: WebsiteMetadata;
 }
 

@@ -5,10 +5,15 @@ import { getParticipantTrials } from '@/lib/results';
 import { saveSessionTrace } from '@/lib/sessions';
 import { getTrialConfigs } from '@/lib/manifest';
 import { getActiveWebsiteMetadata } from '@/lib/website-metadata';
+import { completeAttempt, getRun } from '@/lib/participant-store';
+import { generateTrials } from '@/lib/trials';
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { sessionId, participantId, trialIndex, view_start, duration_ms, interactions } = body;
+  const {
+    sessionId, participantId, trialIndex, view_start, duration_ms, interactions,
+    runId, assignmentId, attemptId, attemptNumber,
+  } = body;
 
   if (!participantId || typeof participantId !== 'string') {
     return NextResponse.json({ error: 'Missing participantId' }, { status: 400 });
@@ -19,34 +24,47 @@ export async function POST(req: NextRequest) {
   if (typeof sessionId !== 'string') {
     return NextResponse.json({ error: 'Missing sessionId' }, { status: 400 });
   }
+  if (![runId, assignmentId, attemptId].every((value) => typeof value === 'string')) {
+    return NextResponse.json({ error: 'Missing runId, assignmentId, or attemptId' }, { status: 400 });
+  }
 
   try {
+    const managedRun = await getRun(participantId, runId);
+    const managedTask = managedRun?.tasks.find((candidate) => candidate.assignment_id === assignmentId);
+    if (!managedTask) throw new Error(`Assignment ${assignmentId} not found`);
     const trials = await getParticipantTrials(participantId);
     const task = trials?.find((trial) => trial.index === trialIndex);
-    if (!task) throw new Error(`Trial ${trialIndex} not found`);
-    const taskConfig = (await getTrialConfigs()).find((config) => config.slug === task.slug);
+    const configs = await getTrialConfigs();
+    const taskConfig = configs.find((config) => config.slug === managedTask.slug);
     const website = await getActiveWebsiteMetadata();
 
     await saveSessionTrace(sessionId, Array.isArray(interactions) ? interactions : [], {
       status: 'complete',
       participant_id: participantId,
       trial_index: trialIndex,
-      app_id: task.task_app,
-      task_prompt: task.task_prompt,
-      site_url: task.site_url || taskConfig?.site_url,
+      app_id: managedTask.app_id || task?.task_app,
+      task_prompt: managedTask.task_prompt,
+      site_url: managedTask.site_url || task?.site_url || taskConfig?.site_url,
       view_start,
       duration_ms,
       completed_at: new Date().toISOString(),
-      attempt_id: process.env.UI_RATER_ATTEMPT || 'attempt-001',
+      run_id: runId,
+      assignment_id: assignmentId,
+      attempt_id: attemptId,
+      attempt_number: attemptNumber,
       website,
     });
 
+    const managed = await completeAttempt({
+      participantId, runId, assignmentId, attemptId, sessionId,
+    });
+
     await withResultsLock(async (data) => {
+      if (!data[participantId]) data[participantId] = { trials: generateTrials(configs) };
       const participant = data[participantId];
-      if (!participant) throw new Error(`Participant "${participantId}" not found`);
 
       const trial = participant.trials.find(t => t.index === trialIndex);
-      if (!trial) throw new Error(`Trial ${trialIndex} not found`);
+      if (!trial) return;
 
       trial.completed = true;
       trial.timestamp = new Date().toISOString();
@@ -67,6 +85,7 @@ export async function POST(req: NextRequest) {
       success: true,
       sessionId,
       analyzeUrl: `/api/sessions/${sessionId}/analyze`,
+      runCompleted: managed.runCompleted,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error';
