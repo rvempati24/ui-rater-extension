@@ -57,12 +57,18 @@
       await deps.startRecording(options.tabId);
       recordingStarted = true;
 
-      await deps.storeSession({ ...options.session, taskTabId: options.tabId });
+      // Timestamp zero is created only after MediaRecorder has acknowledged start.
+      const session = deps.createSession
+        ? await deps.createSession()
+        : options.session;
+      if (!session) throw new Error('Task session was not created');
+
+      await deps.storeSession({ ...session, taskTabId: options.tabId });
       sessionStored = true;
 
       trackingAttempted = true;
-      await deps.startTracking(options.tabId, options.session);
-      return { tabId: options.tabId };
+      await deps.startTracking(options.tabId, session);
+      return { tabId: options.tabId, sessionId: session.sessionId };
     } catch (error) {
       if (trackingAttempted) await deps.stopTracking(options.tabId).catch(() => {});
       if (recordingStarted) await deps.cancelRecording().catch(() => {});

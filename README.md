@@ -1,24 +1,28 @@
-# UI Rater — Task Tracker Chrome Extension
+# UI Rater Extension - UX Analysis Baseline
 
-Chrome extension that tracks user interactions and records video while participants complete tasks on real production websites.
+This Chrome extension records interaction traces, tab video, and a small set of key screenshots while a user completes a task on a synthetic website. The local Next.js server stores one directory per task and can send the trace plus screenshots to an LLM for UX improvement suggestions.
+
+## Baseline scope
+
+The current version includes:
+
+- durable task traces backed by `chrome.storage.local`;
+- one local `data/sessions/<session-id>/` directory per completed task;
+- key screenshots at start, click/change/submit/navigation, and task end;
+- one-pass multimodal UX analysis with evidence IDs;
+- optional bounded website source context and ranked source-file candidates;
+- optional local export and optional upload to [`uxBench/ux-task-trace`](https://huggingface.co/datasets/uxBench/ux-task-trace).
+
+It intentionally does not include a database, job queue, multi-agent pipeline, autonomous repository exploration, automatic code changes, or privacy redaction for real websites. The model can receive a bounded read-only source snapshot, but it cannot browse or edit the repository. Use it only with the current synthetic test sites unless those safeguards are added.
 
 ## Requirements
 
-- Google Chrome (version 116 or later)
-- Node.js (version 18 or later)
-- npm (included with Node.js)
-- Git
+- Chrome 116+
+- Node.js 18+
+- Python 3.10+ only for trace export
+- `huggingface_hub` only when uploading to Hugging Face
 
-## Setup
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/rvempati24/ui-rater-extension.git
-cd ui-rater-extension
-```
-
-### 2. Start the local server
+## Start the server
 
 ```bash
 cd server
@@ -26,155 +30,207 @@ npm install
 npm run dev
 ```
 
-The server runs at `http://localhost:3000` and stores all data locally in `server/data/results.json`. No data is sent to any remote server.
+The server listens on `http://localhost:3000`. By default sessions are stored in `data/sessions` at the extension repository root. To use another canonical folder, set an absolute path before starting the server:
 
-### 3. Install the Chrome extension
+PowerShell:
 
-1. Open Chrome and go to `chrome://extensions/`
-2. Enable **Developer mode** (top-right toggle)
-3. Click **Load unpacked** and select the `ui-rater-extension` folder (the root of the repo, not the `server` subfolder)
-4. Pin the extension icon in the toolbar for easy access
+```powershell
+$env:UI_RATER_SESSION_DIR = "D:\ui-rater-data\sessions"
+npm run dev
+```
 
-## Completing the Study
+Linux/macOS:
 
-1. Click the extension icon in the Chrome toolbar
-2. Enter your assigned **Participant ID** (e.g., P001)
-3. Set the server URL to `http://localhost:3000`
-4. Click **Load Tasks**
+```bash
+export UI_RATER_SESSION_DIR=/var/tmp/ui-rater/sessions
+npm run dev
+```
 
-For each task:
+## Load the extension
 
-1. Read the task prompt displayed in the popup
-2. Click **Begin Task** — Chrome navigates to the target website and starts recording
-3. Complete the task as described (or get as far as you can)
-4. Click the extension icon again and click **Done** to submit
-5. To skip a task, click **Skip** instead
+1. Open `chrome://extensions/`.
+2. Enable Developer mode.
+3. Choose **Load unpacked** and select this repository directory, not `server/`.
+4. Enter the participant ID and `http://localhost:3000` in the popup.
+5. Complete a synthetic task and click **Done**.
 
-Repeat until all 10 tasks are complete.
+## Session output
 
-## Tasks
+```text
+data/sessions/<session-id>/
+  manifest.json
+  trace.json
+  snapshots/
+    s0001.jpg
+    s0001.json
+  analysis/
+    input.json
+    findings.json
+    report.md
+```
 
-| # | Website | Task |
-|---|---------|------|
-| 1 | United Airlines | Search for a one-way flight from NYC to LA on Jan 15 for 1 adult in economy |
-| 2 | Booking.com | Search for hotels in Paris for 2 adults, Jan 10–15 |
-| 3 | Amazon | Search for wireless noise-canceling headphones under $100 with 4+ star rating |
-| 4 | Target | Search for a queen-size bed frame under $300, filter by 4+ star rating |
-| 5 | OpenTable | Find Italian restaurants in SF for 4 people this Saturday at 7 PM |
-| 6 | AllTrails | Find best-rated moderate difficulty hiking trails near Denver, CO |
-| 7 | Zillow | Search for houses in Austin, TX with 3+ bedrooms under $500K |
-| 8 | Indeed | Search for remote software engineer jobs with salary above $120K |
-| 9 | ESPN | Find the current NBA standings for the Western Conference |
-| 10 | Coursera | Search for free machine learning courses from Stanford University |
+The existing `data/results.json` and `data/recordings/` outputs remain for compatibility. Each completed trial in `results.json` also receives its `session_id`.
 
-Tasks are sourced from the [Mind2Web](https://github.com/OSU-NLP-Group/Mind2Web) benchmark. Participants interact with actual production websites. The extension does not modify or interfere with any website's functionality.
+## Run UX analysis
 
-## Returning Your Data
+Copy `server/.env.example` to `server/.env.local`, then set a model that is available to your OpenAI project:
 
-When all tasks are complete, send the `data/` folder to the research team. It contains:
+```dotenv
+OPENAI_API_KEY=...
+# Optional override; defaults to gpt-5.6-terra.
+OPENAI_MODEL=gpt-5.6-terra
 
-1. **Interaction data**: `data/results.json`
-2. **Task recordings**: `data/recordings/` (one `.webm` video per task, e.g., `P001_task1.webm`)
+# Source for the current Allrecipes synthetic website.
+UI_RATER_WEBSITE_SOURCE_DIR=D:\LTL-UI\uxBench\repo-cache\deepseek-v4-flash-free\allrecipes\20260625-090547-allrecipes
+```
 
-## What Is Collected
+Restart the server and call:
 
-### Interaction Events
+PowerShell:
 
-| Event | Data Recorded |
-|-------|---------------|
-| Click | Timestamp, coordinates, element tag/class, visible text (first 80 chars), link URL |
-| Right-click | Timestamp, coordinates, element tag |
-| Scroll | Timestamp, scroll position — throttled to 200ms |
-| Mouse movement | Timestamp, coordinates — throttled to 100ms |
-| Keyboard input | Timestamp, key pressed, modifier keys (Ctrl/Shift/Alt/Cmd) |
-| Text input | Timestamp, field value (first 200 chars), input type |
-| Form focus | Timestamp, element tag, input type |
-| Form submission | Timestamp, form action URL, method |
-| Copy/Paste | Timestamp only — clipboard contents are NOT recorded |
-| Window resize | Timestamp, new dimensions |
-| Page navigation | Timestamp, destination URL, navigation method |
-| Page load | Timestamp, URL, page title |
+```powershell
+Invoke-RestMethod -Method Post `
+  http://localhost:3000/api/sessions/<session-id>/analyze
+```
 
-All timestamps are relative to task start (timestamp 0 = clicked "Begin Task").
+Linux/macOS:
 
-### Video Recording
+```bash
+curl -X POST http://localhost:3000/api/sessions/<session-id>/analyze
+```
 
-Each task is recorded as a `.webm` video file capturing the browser tab contents. Videos are saved automatically to `data/recordings/` when a task is completed (e.g., `P001_task1.webm`). Video is recorded at 1.5 Mbps.
+To prepare and inspect the exact JSON input without making a model request—even when an API key is configured—use:
 
-### What Is NOT Collected
+```text
+POST /api/sessions/<session-id>/analyze?prepareOnly=1
+```
 
-- Clipboard contents (only the act of copying/pasting is logged)
-- Passwords or authentication credentials
-- Cookies, session tokens, or browser storage
-- Browser history outside of study tasks
-- Data from other tabs or windows
-- Any personally identifiable information beyond the assigned Participant ID
+If `OPENAI_API_KEY` is missing, the endpoint makes no model request. It still writes `analysis/input.json`, which is useful for inspecting exactly what would be sent. `gpt-5.6-terra` is the default model; `OPENAI_MODEL` can override it.
 
-## Data Format
+The prompt is deliberately short: report only usability problems supported by supplied evidence, separate observation from inference, cite existing event/snapshot IDs, and return the fixed JSON schema. When source is configured, each finding may also return source-file candidates, but only from paths actually included in `input.json`.
 
-The `results.json` file contains one entry per participant with an array of 10 trials:
+## Isolated LLM analysis module
+
+All model-facing code is isolated in `server/lib/ux-analysis/`:
+
+- `input.ts`: writes the inspectable `analysis/input.json`;
+- `source-context.ts`: reads a server-configured source root with extension, directory, file-count, and character limits;
+- `prompt.ts`: owns the lean prompt and JSON schema;
+- `openai.ts`: the only module allowed to call the OpenAI API;
+- `validate.ts`: rejects unknown event, screenshot, and source references;
+- `report.ts`: renders `report.md`;
+- `index.ts`: exposes prepare-only and full-analysis operations.
+
+The HTTP request cannot supply a filesystem path. `UI_RATER_WEBSITE_SOURCE_DIR` must be configured by the server operator, and its final directory name must match the session's `app_id`. For the current pilot, that name is `20260625-090547-allrecipes`.
+
+## Suggested pilot test
+
+1. Start the server with `UI_RATER_WEBSITE_SOURCE_DIR` set to the Allrecipes source above.
+2. Reload the unpacked Chrome extension.
+3. Complete the task “Open the reviews of a recipe with beef sirloin.”
+4. Find `session_id` in `data/results.json` or use the newest `data/sessions/<session-id>` directory.
+5. Call the prepare-only endpoint and inspect `analysis/input.json`.
+6. Confirm the trace is ordered, screenshots open correctly, and `source.files` includes files such as `src/components/ReviewSection.jsx`.
+7. Set `OPENAI_API_KEY`, call the normal analyze endpoint, and inspect `findings.json` plus `report.md`.
+
+The pilot succeeds at the infrastructure level when every accepted finding cites real event/snapshot IDs, every source candidate exists in `source.files`, and the recommendation is understandable from the cited evidence. Whether the recommendations are actually useful should still be judged manually in this first pilot.
+
+## Configure trace export
+
+Copy `scripts/trace-export.example.json` to a local config file and edit it:
 
 ```json
 {
-  "P001": {
-    "trials": [
-      {
-        "index": 1,
-        "slug": "united",
-        "task_prompt": "Search for a one-way flight from New York to Los Angeles on January 15th for 1 adult in economy class",
-        "completed": true,
-        "timestamp": "2026-07-03T14:32:01.000Z",
-        "view_start": "2026-07-03T14:30:15.000Z",
-        "duration_ms": 106000,
-        "interactions": [
-          {
-            "kind": "click",
-            "ts": 5300,
-            "url": "https://www.united.com/",
-            "tag": "button.submit-btn",
-            "text": "Search flights",
-            "x": 340,
-            "y": 512
-          }
-        ]
-      }
-    ]
-  }
+  "sessions_dir": "data/sessions",
+  "keep_local_export": true,
+  "local_export_dir": "exports/ux-task-trace",
+  "upload_hf": false,
+  "hf_repo_id": "uxBench/ux-task-trace",
+  "hf_path_prefix": "sessions"
 }
 ```
 
-## Architecture
+The settings mean:
 
-```
-ui-rater-extension/
-├── manifest.json          Manifest V3 config
-├── content.js             Injected into each page, captures DOM events
-│                          Persists tracking state in chrome.storage.local
-│                          Flushes events to background worker every 10s
-├── background.js          Accumulates interactions across page navigations
-│                          Manages tab capture and offscreen recording
-│                          Sends data to local server on task completion
-│                          Downloads recorded video via chrome.downloads
-├── offscreen.html/js      Records tab MediaStream using MediaRecorder API
-│                          Produces WebM video blobs
-├── popup.html/js          Participant-facing UI for task management
-│
-└── server/                Local data server (Next.js)
-    └── app/api/               REST endpoints for receiving data
-        ├── tasks/             GET — returns task list for participant
-        ├── complete-task/     POST — saves completed task data
-        ├── partial-save/      POST — periodic saves during task
-        └── upload-recording/  POST — receives video recordings
+- `sessions_dir`: source containing canonical session directories;
+- `keep_local_export`: create an additional persistent export package;
+- `local_export_dir`: path for that package;
+- `upload_hf`: enable a live Hugging Face write;
+- `hf_repo_id`: dataset repository, default `uxBench/ux-task-trace`;
+- `hf_path_prefix`: remote directory prefix, default `sessions`.
 
-└── data/                      All study output (send this folder back)
-    ├── results.json           Interaction traces
-    ├── recordings/            Task videos, e.g. P001_task1.webm
-    ├── trials-config.json     Task definitions
-    └── participants.json      Valid participant IDs
+Relative paths are resolved from the extension repository root. Environment variables can override the config: `UI_RATER_SESSIONS_DIR`, `UI_RATER_KEEP_LOCAL_EXPORT`, `UI_RATER_LOCAL_EXPORT_DIR`, `UI_RATER_UPLOAD_HF`, `HF_DATASET_REPO`, and `HF_PATH_PREFIX`.
+
+The exporter processes only sessions whose manifest status is `complete`. It never automatically deletes the canonical session directory. When `keep_local_export=false` and upload is enabled, it uses a temporary staging directory and retains no additional export copy.
+
+## Export on Windows
+
+Preview without copying or uploading:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\export-traces.ps1 `
+  -Config scripts\trace-export.local.json -DryRun
 ```
 
-All processing happens locally. The only network traffic is between the participant's browser and the real websites they visit during tasks.
+Create the configured local export:
 
-## Estimated Time
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\export-traces.ps1 `
+  -Config scripts\trace-export.local.json
+```
 
-10 tasks, approximately 2–5 minutes each. Total session: 25–50 minutes.
+For a live Hugging Face upload, first install the optional dependency and set a write-capable token, then pass the explicit upload switch:
+
+```powershell
+python -m pip install huggingface_hub
+$env:HF_TOKEN = "hf_..."
+powershell -ExecutionPolicy Bypass -File scripts\export-traces.ps1 `
+  -Config scripts\trace-export.local.json -UploadHf
+```
+
+## Export on Linux or macOS
+
+Preview:
+
+```bash
+sh scripts/export-traces.sh --config scripts/trace-export.local.json --dry-run
+```
+
+Create the configured local export:
+
+```bash
+sh scripts/export-traces.sh --config scripts/trace-export.local.json
+```
+
+Upload explicitly:
+
+```bash
+python3 -m pip install huggingface_hub
+export HF_TOKEN=hf_...
+sh scripts/export-traces.sh --config scripts/trace-export.local.json --upload-hf
+```
+
+Hugging Face upload is disabled by default. It is never run by task completion or by the server test suite.
+
+## Development checks
+
+From the extension root:
+
+```bash
+node --test tests/*.test.js
+```
+
+From `server/`:
+
+```bash
+npx tsc --noEmit
+npm run lint
+```
+
+Validate the exporter without external writes:
+
+```bash
+python scripts/export_traces.py --dry-run
+```
+
+The detailed execution goals and boundaries are in [the baseline implementation plan](docs/superpowers/plans/2026-07-16-evidence-grounded-ux-analysis.md).

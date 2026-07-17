@@ -1,6 +1,7 @@
 let recorder = null;
 let chunks = [];
 let pendingBlob = null;
+let lastUploadedTask = null;
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'START_RECORDING') {
@@ -33,6 +34,7 @@ async function startRecording(streamId) {
 
   chunks = [];
   pendingBlob = null;
+  lastUploadedTask = null;
   recorder = new MediaRecorder(stream, {
     mimeType: 'video/webm;codecs=vp8',
     videoBitsPerSecond: 1500000,
@@ -60,9 +62,13 @@ async function stopRecording(serverUrl, participantId, taskIndex) {
     });
   }
 
-  if (!pendingBlob) return { ok: false, error: 'Not recording' };
   if (!serverUrl || !participantId || !taskIndex) {
     return { ok: false, error: 'Missing upload params' };
+  }
+  const uploadKey = `${serverUrl}|${participantId}|${taskIndex}`;
+  if (!pendingBlob) {
+    if (lastUploadedTask === uploadKey) return { ok: true, alreadyUploaded: true };
+    return { ok: false, error: 'Not recording' };
   }
 
   try {
@@ -72,6 +78,7 @@ async function stopRecording(serverUrl, participantId, taskIndex) {
     );
     if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
     pendingBlob = null;
+    lastUploadedTask = uploadKey;
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -91,4 +98,5 @@ function cancelRecording() {
   }
   chunks = [];
   pendingBlob = null;
+  lastUploadedTask = null;
 }

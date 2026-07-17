@@ -17,3 +17,10 @@ test('offscreen recorder keeps a failed upload available for retry', () => {
   assert.match(source, /pendingBlob/);
   assert.match(source, /type === ['"]CANCEL_RECORDING['"]/);
 });
+
+test('offscreen recorder permits completion retry after a successful video upload', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'offscreen.js'), 'utf8');
+
+  assert.match(source, /lastUploadedTask/);
+  assert.match(source, /alreadyUploaded/);
+});

@@ -1,14 +1,15 @@
 importScripts('task-session.js');
 
 const DEFAULT_SERVER = 'https://ui-rater-production.up.railway.app';
+const ACTIVE_SESSION_KEY = '_activeSession';
+const MAX_SNAPSHOTS = 20;
+const SNAPSHOT_DEBOUNCE_MS = 750;
 
-let collectedInteractions = [];
 let recordingTabId = null;
+let sessionWriteLock = Promise.resolve();
 
 async function ensureOffscreen() {
-  const contexts = await chrome.runtime.getContexts({
-    contextTypes: ['OFFSCREEN_DOCUMENT'],
-  });
+  const contexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
   if (contexts.length === 0) {
     await chrome.offscreen.createDocument({
       url: 'offscreen.html',
@@ -22,11 +23,8 @@ async function startRecording(tabId) {
   await ensureOffscreen();
   const streamId = await new Promise((resolve, reject) => {
     chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (id) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      resolve(id);
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve(id);
     });
   });
   return new Promise((resolve, reject) => {
@@ -34,8 +32,7 @@ async function startRecording(tabId) {
       if (res?.ok) {
         recordingTabId = tabId;
         resolve();
-      }
-      else reject(new Error(res?.error || 'Failed to start recording'));
+      } else reject(new Error(res?.error || 'Failed to start recording'));
     });
   });
 }
@@ -43,10 +40,7 @@ async function startRecording(tabId) {
 async function stopRecording(serverUrl, participantId, taskIndex) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({
-      type: 'STOP_RECORDING',
-      serverUrl,
-      participantId,
-      taskIndex,
+      type: 'STOP_RECORDING', serverUrl, participantId, taskIndex,
     }, (res) => {
       if (res?.ok) recordingTabId = null;
       resolve(res || { ok: false, error: 'Recorder did not respond' });
@@ -66,13 +60,9 @@ async function cancelRecording() {
 function sendTabMessage(tabId, message) {
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-      } else if (!response?.ok) {
-        reject(new Error(response?.error || 'Task tracker did not respond'));
-      } else {
-        resolve(response);
-      }
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else if (!response?.ok) reject(new Error(response?.error || 'Task tracker did not respond'));
+      else resolve(response);
     });
   });
 }
@@ -81,10 +71,7 @@ async function sendTrackingMessage(tabId, message) {
   try {
     return await sendTabMessage(tabId, message);
   } catch (firstError) {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['content.js'],
-    });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
     return sendTabMessage(tabId, message).catch(() => { throw firstError; });
   }
 }
@@ -96,6 +83,14 @@ async function openPendingTask(createOptions) {
   return { status: 'pending', tabId: taskTab.id };
 }
 
+function createSession() {
+  return {
+    sessionId: crypto.randomUUID(),
+    originTime: Date.now(),
+    viewStart: new Date().toISOString(),
+  };
+}
+
 async function startTaskFlow(msg) {
   const stored = await chrome.storage.local.get(['_pendingTaskTabId']);
   const plan = UiRaterTaskSession.planTaskStart({
@@ -104,10 +99,7 @@ async function startTaskFlow(msg) {
     pendingTaskTabId: stored._pendingTaskTabId,
   });
 
-  if (plan.action === 'open') {
-    return openPendingTask(plan.createOptions);
-  }
-
+  if (plan.action === 'open') return openPendingTask(plan.createOptions);
   if (plan.action === 'wrong-tab') {
     try {
       await chrome.tabs.update(plan.pendingTaskTabId, { active: true });
@@ -122,140 +114,200 @@ async function startTaskFlow(msg) {
     }
   }
 
-  collectedInteractions = [];
-  const session = {
-    originTime: Date.now(),
-    viewStart: new Date().toISOString(),
-  };
   const result = await UiRaterTaskSession.beginRecordingOnTab({
     startRecording,
-    storeSession: ({ originTime, viewStart, taskTabId }) => chrome.storage.local.set({
-      _tracking: true,
-      _originTime: originTime,
-      _viewStart: viewStart,
-      _taskTabId: taskTabId,
-    }),
+    createSession,
+    storeSession: async ({ sessionId, originTime, viewStart, taskTabId }) => {
+      const taskTab = await chrome.tabs.get(taskTabId);
+      await chrome.storage.local.set({
+        _tracking: true,
+        _sessionId: sessionId,
+        _originTime: originTime,
+        _viewStart: viewStart,
+        _taskTabId: taskTabId,
+        [ACTIVE_SESSION_KEY]: {
+          sessionId,
+          originTime,
+          viewStart,
+          taskTabId,
+          windowId: taskTab.windowId,
+          interactions: [],
+          nextEventSeq: 1,
+          snapshotCount: 0,
+          lastSnapshotAt: 0,
+        },
+      });
+    },
     startTracking: (tabId, activeSession) => sendTrackingMessage(tabId, {
-      type: 'START_TRACKING',
-      session: activeSession,
+      type: 'START_TRACKING', session: activeSession,
     }),
     stopTracking: (tabId) => sendTabMessage(tabId, { type: 'STOP_TRACKING' }),
     cancelRecording,
     clearSession: () => chrome.storage.local.remove([
-      '_tracking', '_originTime', '_viewStart', '_taskTabId',
+      '_tracking', '_sessionId', '_originTime', '_viewStart', '_taskTabId', ACTIVE_SESSION_KEY,
     ]),
-  }, {
-    tabId: plan.tabId,
-    session,
-  });
+  }, { tabId: plan.tabId });
 
   await chrome.storage.local.remove(['_pendingTaskTabId']);
   return { status: 'recording', ...result };
 }
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === 'GET_STATE') {
-    chrome.storage.local.get(['participantId', 'serverUrl', 'tasks', 'currentTaskIndex'], (data) => {
-      sendResponse(data);
-    });
-    return true;
-  }
+function withSessionWrite(fn) {
+  const next = sessionWriteLock.then(fn);
+  sessionWriteLock = next.catch(() => {});
+  return next;
+}
 
-  if (msg.type === 'APPEND_INTERACTIONS') {
-    if (Array.isArray(msg.interactions)) {
-      collectedInteractions.push(...msg.interactions);
+async function appendInteractions(msg) {
+  return withSessionWrite(async () => {
+    const data = await chrome.storage.local.get([
+      ACTIVE_SESSION_KEY, 'participantId', 'serverUrl', 'currentTaskIndex', 'tasks',
+    ]);
+    const session = data[ACTIVE_SESSION_KEY];
+    if (!session || !Array.isArray(msg.interactions)) return { ok: false, error: 'No active session' };
+
+    for (const event of msg.interactions) {
+      session.interactions.push({ ...event, seq: session.nextEventSeq++ });
     }
-    chrome.storage.local.get(['participantId', 'serverUrl', 'currentTaskIndex', 'tasks'], (data) => {
-      if (!data.participantId || !data.tasks) return;
+    await chrome.storage.local.set({ [ACTIVE_SESSION_KEY]: session });
+
+    if (data.participantId && data.tasks) {
       const serverUrl = data.serverUrl || DEFAULT_SERVER;
-      fetch(`${serverUrl}/api/partial-save`, {
+      await fetch(`${serverUrl}/api/partial-save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          sessionId: session.sessionId,
           participantId: data.participantId,
           trialIndex: (data.currentTaskIndex || 0) + 1,
-          view_start: msg.viewStart,
-          interactions: collectedInteractions,
+          view_start: session.viewStart,
+          interactions: session.interactions,
         }),
       }).catch(() => {});
+    }
+    return { ok: true, interactionCount: session.interactions.length };
+  });
+}
+
+async function captureSnapshot(msg, sender) {
+  return withSessionWrite(async () => {
+    const data = await chrome.storage.local.get([ACTIVE_SESSION_KEY, 'serverUrl']);
+    const session = data[ACTIVE_SESSION_KEY];
+    if (!session) return { ok: false, error: 'No active session' };
+    if (sender.tab?.id !== session.taskTabId) return { ok: false, error: 'Snapshot came from another tab' };
+    if (!sender.tab.active) return { ok: false, error: 'Task tab is not active' };
+
+    const now = Date.now();
+    if (session.snapshotCount >= MAX_SNAPSHOTS) return { ok: true, skipped: 'limit' };
+    if (now - session.lastSnapshotAt < SNAPSHOT_DEBOUNCE_MS && msg.reason !== 'task-end') {
+      return { ok: true, skipped: 'debounced' };
+    }
+
+    const imageDataUrl = await chrome.tabs.captureVisibleTab(session.windowId, {
+      format: 'jpeg', quality: 70,
     });
-    return false;
+    const snapshotId = `s${String(session.snapshotCount + 1).padStart(4, '0')}`;
+    const serverUrl = data.serverUrl || DEFAULT_SERVER;
+    const response = await fetch(`${serverUrl}/api/sessions/${session.sessionId}/snapshot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        snapshotId,
+        imageDataUrl,
+        reason: msg.reason || 'state-change',
+        ts: msg.ts,
+        url: msg.url,
+        title: msg.title,
+        viewport: msg.viewport,
+        scroll: msg.scroll,
+        elements: msg.elements || [],
+      }),
+    });
+    if (!response.ok) throw new Error(`Snapshot upload failed: ${response.status}`);
+
+    session.snapshotCount += 1;
+    session.lastSnapshotAt = now;
+    await chrome.storage.local.set({ [ACTIVE_SESSION_KEY]: session });
+    return { ok: true, snapshotId };
+  });
+}
+
+async function completeTask(msg) {
+  const data = await chrome.storage.local.get([
+    ACTIVE_SESSION_KEY, 'participantId', 'serverUrl', 'currentTaskIndex', 'tasks',
+  ]);
+  const session = data[ACTIVE_SESSION_KEY];
+  if (!data.participantId || !data.tasks || !session) throw new Error('Not configured');
+
+  const serverUrl = data.serverUrl || DEFAULT_SERVER;
+  const taskIndex = (data.currentTaskIndex || 0) + 1;
+  const participantId = data.participantId;
+
+  const recordingResult = await stopRecording(serverUrl, participantId, taskIndex);
+  if (!recordingResult.ok) {
+    throw new Error(`Recording upload failed: ${recordingResult.error || 'unknown error'}`);
   }
 
+  const latest = await chrome.storage.local.get([ACTIVE_SESSION_KEY]);
+  const finalSession = latest[ACTIVE_SESSION_KEY] || session;
+  const res = await fetch(`${serverUrl}/api/complete-task`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId: finalSession.sessionId,
+      participantId,
+      trialIndex: taskIndex,
+      view_start: finalSession.viewStart || msg.viewStart,
+      duration_ms: msg.durationMs || 0,
+      interactions: finalSession.interactions,
+    }),
+  });
+  if (!res.ok) throw new Error(`Server error: ${res.status}`);
+
+  await chrome.storage.local.remove([ACTIVE_SESSION_KEY, '_sessionId']);
+  const nextIndex = taskIndex;
+  if (nextIndex < data.tasks.length) await chrome.storage.local.set({ currentTaskIndex: nextIndex });
+  return { ok: true, sessionId: finalSession.sessionId, finished: nextIndex >= data.tasks.length };
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'GET_STATE') {
+    chrome.storage.local.get(['participantId', 'serverUrl', 'tasks', 'currentTaskIndex'], sendResponse);
+    return true;
+  }
+  if (msg.type === 'APPEND_INTERACTIONS') {
+    appendInteractions(msg).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (msg.type === 'CAPTURE_SNAPSHOT') {
+    captureSnapshot(msg, sender).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
   if (msg.type === 'START_TASK_FLOW') {
-    startTaskFlow(msg)
-      .then((result) => sendResponse({ ok: true, ...result }))
-      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    startTaskFlow(msg).then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
-
   if (msg.type === 'COMPLETE_TASK') {
-    chrome.storage.local.get(['participantId', 'serverUrl', 'currentTaskIndex', 'tasks'], async (data) => {
-      if (!data.participantId || !data.tasks) {
-        sendResponse({ ok: false, error: 'Not configured' });
-        return;
-      }
-      const serverUrl = data.serverUrl || DEFAULT_SERVER;
-      const allInteractions = [...collectedInteractions];
-      const viewStart = msg.viewStart;
-      const durationMs = msg.durationMs || 0;
-      const taskIndex = (data.currentTaskIndex || 0) + 1;
-      const participantId = data.participantId;
-
-      try {
-        // Stop recording and require a successful upload before completing the task.
-        const recordingResult = await stopRecording(serverUrl, participantId, taskIndex);
-        if (!recordingResult.ok) {
-          throw new Error(`Recording upload failed: ${recordingResult.error || 'unknown error'}`);
-        }
-
-        const res = await fetch(`${serverUrl}/api/complete-task`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            participantId,
-            trialIndex: taskIndex,
-            view_start: viewStart,
-            duration_ms: durationMs,
-            interactions: allInteractions,
-          }),
-        });
-        if (!res.ok) throw new Error(`Server error: ${res.status}`);
-
-        collectedInteractions = [];
-
-        const nextIndex = taskIndex;
-        if (nextIndex < data.tasks.length) {
-          await chrome.storage.local.set({ currentTaskIndex: nextIndex });
-        }
-        sendResponse({ ok: true, finished: nextIndex >= data.tasks.length });
-      } catch (err) {
-        sendResponse({ ok: false, error: err.message });
-      }
-    });
+    completeTask(msg).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
-
   if (msg.type === 'SKIP_TASK') {
-    (async () => {
-      chrome.storage.local.get(['serverUrl', 'participantId', 'currentTaskIndex'], async (data) => {
-        const taskIndex = (data.currentTaskIndex || 0) + 1;
-        await stopRecording(data.serverUrl || DEFAULT_SERVER, data.participantId, taskIndex);
-      });
-    })();
+    chrome.storage.local.get(['serverUrl', 'participantId', 'currentTaskIndex'], async (data) => {
+      const taskIndex = (data.currentTaskIndex || 0) + 1;
+      await stopRecording(data.serverUrl || DEFAULT_SERVER, data.participantId, taskIndex);
+    });
     return false;
   }
-
   if (msg.type === 'CLEAR_INTERACTIONS') {
-    collectedInteractions = [];
+    chrome.storage.local.remove([ACTIVE_SESSION_KEY, '_sessionId']);
     return false;
   }
+  return false;
 });
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(['serverUrl'], (data) => {
-    if (!data.serverUrl) {
-      chrome.storage.local.set({ serverUrl: DEFAULT_SERVER });
-    }
+    if (!data.serverUrl) chrome.storage.local.set({ serverUrl: DEFAULT_SERVER });
   });
 });

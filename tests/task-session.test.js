@@ -60,17 +60,22 @@ test('starts recording and tracking on the already authorized tab', async () => 
   const calls = [];
   const deps = {
     startRecording: async (tabId) => calls.push(['record', tabId]),
+    createSession: async () => session,
     storeSession: async (session) => calls.push(['store', session]),
     startTracking: async (tabId, session) => calls.push(['track', tabId, session]),
     stopTracking: async () => {},
     cancelRecording: async () => {},
     clearSession: async () => {},
   };
-  const session = { originTime: 1000, viewStart: '2026-07-16T12:00:00.000Z' };
+  const session = {
+    sessionId: '11111111-1111-4111-8111-111111111111',
+    originTime: 1000,
+    viewStart: '2026-07-16T12:00:00.000Z',
+  };
 
-  const result = await beginRecordingOnTab(deps, { tabId: 42, session });
+  const result = await beginRecordingOnTab(deps, { tabId: 42 });
 
-  assert.deepEqual(result, { tabId: 42 });
+  assert.deepEqual(result, { tabId: 42, sessionId: session.sessionId });
   assert.deepEqual(calls, [
     ['record', 42],
     ['store', { ...session, taskTabId: 42 }],
@@ -82,6 +87,7 @@ test('leaves the task page open and pending when capture fails', async () => {
   const calls = [];
   const deps = {
     startRecording: async () => { throw new Error('activeTab missing'); },
+    createSession: async () => calls.push('create'),
     storeSession: async () => calls.push('store'),
     startTracking: async () => calls.push('track'),
     stopTracking: async () => calls.push('stop-track'),

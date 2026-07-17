@@ -1,13 +1,17 @@
 export type InteractionEventKind =
-  | 'expand' | 'collapse'
-  | 'hover_start' | 'hover_end'
-  | 'iframe_click' | 'iframe_scroll'
-  | 'mousemove' | 'input';
+  | 'pageload' | 'click' | 'rightclick' | 'scroll' | 'mousemove'
+  | 'input' | 'change' | 'keydown' | 'formsubmit' | 'copy' | 'paste'
+  | 'focus' | 'resize' | 'navigate'
+  // Compatibility with the existing side-by-side comparison UI.
+  | 'expand' | 'collapse' | 'hover_start' | 'hover_end'
+  | 'iframe_click' | 'iframe_scroll';
 
 export interface InteractionEvent {
   kind: InteractionEventKind;
-  side: 'left' | 'right';
+  seq?: number;
+  side?: 'left' | 'right';
   ts: number;
+  url?: string;
   x?: number;
   y?: number;
   tag?: string;
@@ -20,6 +24,14 @@ export interface InteractionEvent {
   href?: string;
   field?: string;
   value?: string;
+  key?: string;
+  code?: string;
+  inputType?: string;
+  scrollX?: number;
+  scrollY?: number;
+  title?: string;
+  method?: string;
+  action?: string;
 }
 
 export interface Trial {
@@ -28,6 +40,7 @@ export interface Trial {
   group: string;                       // short group name (e.g. "gamestop")
   task_app: string;
   task_prompt: string;
+  site_url?: string;
   plain_app: string;
   defect_app: string;
   defect_principle: string;
@@ -42,6 +55,35 @@ export interface Trial {
   view_start: string | null;
   duration_ms: number | null;
   interactions: InteractionEvent[];
+  session_id?: string;
+}
+
+export interface SessionManifest {
+  schema_version: 1;
+  session_id: string;
+  status: 'recording' | 'complete';
+  participant_id?: string;
+  trial_index?: number;
+  app_id?: string;
+  task_prompt?: string;
+  site_url?: string;
+  view_start?: string;
+  duration_ms?: number;
+  interaction_count?: number;
+  snapshot_count?: number;
+  completed_at?: string;
+}
+
+export interface SnapshotMetadata {
+  snapshot_id: string;
+  reason: string;
+  ts: number;
+  url?: string;
+  title?: string;
+  viewport?: { width: number; height: number };
+  scroll?: { x: number; y: number };
+  elements: Array<Record<string, unknown>>;
+  image_file: string;
 }
 
 export interface AppEntry {

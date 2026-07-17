@@ -244,7 +244,8 @@ $('doneBtn').addEventListener('click', async () => {
 
     // Clear tracking state
     await chrome.storage.local.remove([
-      '_tracking', '_originTime', '_viewStart', '_taskTabId', '_pendingTaskTabId',
+      '_tracking', '_sessionId', '_originTime', '_viewStart', '_taskTabId', '_pendingTaskTabId',
+      '_activeSession',
     ]);
 
     state.currentTaskIndex++;
@@ -272,7 +273,8 @@ $('skipBtn').addEventListener('click', async () => {
   chrome.runtime.sendMessage({ type: 'SKIP_TASK' });
   chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
   await chrome.storage.local.remove([
-    '_tracking', '_originTime', '_viewStart', '_taskTabId', '_pendingTaskTabId',
+    '_tracking', '_sessionId', '_originTime', '_viewStart', '_taskTabId', '_pendingTaskTabId',
+    '_activeSession',
   ]);
 
   state.currentTaskIndex++;
@@ -289,7 +291,8 @@ $('skipBtn').addEventListener('click', async () => {
 $('resetBtn').addEventListener('click', async () => {
   await chrome.storage.local.remove([
     'participantId', 'tasks', 'currentTaskIndex',
-    '_tracking', '_originTime', '_viewStart', '_taskTabId', '_pendingTaskTabId',
+    '_tracking', '_sessionId', '_originTime', '_viewStart', '_taskTabId', '_pendingTaskTabId',
+    '_activeSession',
   ]);
   chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
   state = { participantId: '', serverUrl: state.serverUrl, tasks: null, currentTaskIndex: 0 };

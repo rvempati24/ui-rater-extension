@@ -11,6 +11,7 @@ export function generateTrials(configs: TrialConfigEntry[]): Trial[] {
       group: config.group,
       task_app: config.plain_app,
       task_prompt: config.task_prompt ?? `Complete a realistic task on the ${config.group} site.`,
+      site_url: config.site_url,
       plain_app: config.plain_app,
       defect_app: '',
       defect_principle: '',

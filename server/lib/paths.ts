@@ -10,6 +10,9 @@ export const DATA_DIR = fs.existsSync(candidate) ? candidate : fallback;
 export const RESULTS_PATH = path.join(DATA_DIR, 'results.json');
 export const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings');
 export const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
+export const SESSIONS_DIR = process.env.UI_RATER_SESSION_DIR
+  ? path.resolve(process.env.UI_RATER_SESSION_DIR)
+  : path.join(DATA_DIR, 'sessions');
 
 // Config files live in server/config/, not in data/
 const configCandidate = path.join(cwd, 'config');
