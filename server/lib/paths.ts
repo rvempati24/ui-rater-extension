@@ -20,4 +20,6 @@ const configFallback = path.join(cwd, 'server', 'config');
 const CONFIG_DIR = fs.existsSync(configCandidate) ? configCandidate : configFallback;
 
 export const PARTICIPANTS_PATH = path.join(CONFIG_DIR, 'participants.json');
-export const TRIALS_CONFIG_PATH = path.join(CONFIG_DIR, 'trials-config.json');
+export const TRIALS_CONFIG_PATH = process.env.UI_RATER_TRIALS_CONFIG
+  ? path.resolve(process.env.UI_RATER_TRIALS_CONFIG)
+  : path.join(CONFIG_DIR, 'trials-config.json');

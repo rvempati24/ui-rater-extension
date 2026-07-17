@@ -153,4 +153,5 @@ data/recordings/*
 !data/recordings/.gitkeep
 exports/
 scripts/trace-export.local.json
+server/.runtime/
 .DS_Store

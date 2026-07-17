@@ -3,8 +3,6 @@ import { getParticipantTrials, withResultsLock } from '@/lib/results';
 import { getTrialConfigs } from '@/lib/manifest';
 import { generateTrials } from '@/lib/trials';
 import { isValidParticipant } from '@/lib/participants';
-import { TRIALS_CONFIG_PATH } from '@/lib/paths';
-import fs from 'fs/promises';
 
 export async function GET(req: NextRequest) {
   const participantId = req.nextUrl.searchParams.get('participantId');
@@ -29,9 +27,8 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const trialsConfig = JSON.parse(await fs.readFile(TRIALS_CONFIG_PATH, 'utf-8'));
-
-  const tasks = trialsConfig.map((config: { task_prompt: string; site_url?: string; group: string; slug: string }) => ({
+  const trialsConfig = await getTrialConfigs();
+  const tasks = trialsConfig.map((config) => ({
     task_prompt: config.task_prompt,
     site_url: config.site_url ?? '',
     group: config.group,

@@ -54,6 +54,41 @@ npm run dev
 4. Enter the participant ID and `http://localhost:3000` in the popup.
 5. Complete a synthetic task and click **Done**.
 
+## Select tasks when starting the server
+
+Use `dev:tasks` to point the server at any website's `trials-config.json` and choose the tasks for that run. The source JSON is never modified; the launcher writes an ignored temporary selection and passes its path to Next.js.
+
+Run every task (the default):
+
+```bash
+cd server
+npm run dev:tasks -- --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --all
+```
+
+Run one random task, or a reproducible random sample of five:
+
+```bash
+npm run dev:tasks -- --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --random
+npm run dev:tasks -- --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --random 5 --seed pilot-01
+```
+
+Run source tasks 1, 3, and 5 in that order:
+
+```bash
+npm run dev:tasks -- --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --tasks 1 3 5
+```
+
+Run all original Mind2Web tasks, or randomly choose three of them:
+
+```bash
+npm run dev:tasks -- --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --mind2web
+npm run dev:tasks -- --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --mind2web --random 3 --seed pilot-01
+```
+
+`--mind2web` recognizes task metadata (`source`, `origin`, or `task_source` set to `mind2web`, or `is_mind2web: true`). It also automatically matches prompts against an adjacent `mind2web_tasks.txt`; use `--mind2web-tasks <file>` to supply a different list. Add `--dry-run` to inspect the selected source task numbers without starting the server, and `--help` for all options.
+
+The commands are identical in PowerShell, Linux, and macOS. Task numbers always refer to positions in the source JSON, while the selected run is reindexed from 1. Use a new participant ID after changing a selection because an existing participant keeps the trials created on their first request.
+
 ## Session output
 
 ```text

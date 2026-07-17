@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:tasks": "node scripts/start-with-tasks.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
