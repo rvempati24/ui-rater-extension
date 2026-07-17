@@ -1,5 +1,6 @@
 let recorder = null;
 let chunks = [];
+let pendingBlob = null;
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'START_RECORDING') {
@@ -11,6 +12,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then((result) => sendResponse(result))
       .catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
+  }
+  if (msg.type === 'CANCEL_RECORDING') {
+    cancelRecording();
+    sendResponse({ ok: true });
+    return false;
   }
 });
 
@@ -26,6 +32,7 @@ async function startRecording(streamId) {
   });
 
   chunks = [];
+  pendingBlob = null;
   recorder = new MediaRecorder(stream, {
     mimeType: 'video/webm;codecs=vp8',
     videoBitsPerSecond: 1500000,
@@ -39,31 +46,49 @@ async function startRecording(streamId) {
 }
 
 async function stopRecording(serverUrl, participantId, taskIndex) {
-  if (!recorder || recorder.state === 'inactive') return { ok: false, error: 'Not recording' };
+  if (recorder && recorder.state !== 'inactive') {
+    await new Promise((resolve) => {
+      recorder.onstop = () => {
+        pendingBlob = new Blob(chunks, { type: 'video/webm' });
+        chunks = [];
 
-  return new Promise((resolve) => {
-    recorder.onstop = async () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
+        recorder.stream.getTracks().forEach(t => t.stop());
+        recorder = null;
+        resolve();
+      };
+      recorder.stop();
+    });
+  }
+
+  if (!pendingBlob) return { ok: false, error: 'Not recording' };
+  if (!serverUrl || !participantId || !taskIndex) {
+    return { ok: false, error: 'Missing upload params' };
+  }
+
+  try {
+    const res = await fetch(
+      `${serverUrl}/api/upload-recording?participantId=${participantId}&taskIndex=${taskIndex}`,
+      { method: 'POST', body: pendingBlob }
+    );
+    if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+    pendingBlob = null;
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+function cancelRecording() {
+  if (recorder) {
+    const activeRecorder = recorder;
+    recorder = null;
+    activeRecorder.onstop = () => {
+      activeRecorder.stream.getTracks().forEach(t => t.stop());
       chunks = [];
-
-      recorder.stream.getTracks().forEach(t => t.stop());
-      recorder = null;
-
-      if (serverUrl && participantId && taskIndex) {
-        try {
-          const res = await fetch(
-            `${serverUrl}/api/upload-recording?participantId=${participantId}&taskIndex=${taskIndex}`,
-            { method: 'POST', body: blob }
-          );
-          if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
-          resolve({ ok: true });
-        } catch (err) {
-          resolve({ ok: false, error: err.message });
-        }
-      } else {
-        resolve({ ok: false, error: 'Missing upload params' });
-      }
     };
-    recorder.stop();
-  });
+    if (activeRecorder.state !== 'inactive') activeRecorder.stop();
+    else activeRecorder.stream.getTracks().forEach(t => t.stop());
+  }
+  chunks = [];
+  pendingBlob = null;
 }

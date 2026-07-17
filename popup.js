@@ -52,13 +52,33 @@ function showTask() {
   $('taskSite').textContent = task.site_url ? `→ ${task.site_url}` : '';
 
   // Check if tracking is active from storage (survives popup close/reopen)
-  chrome.storage.local.get(['_tracking'], (data) => {
+  chrome.storage.local.get(['_tracking', '_pendingTaskTabId'], async (data) => {
     if (data._tracking) {
       showDuringTrack();
     } else {
       showPreTrack();
+      await updateBeginTaskButton(task, data._pendingTaskTabId);
     }
   });
+}
+
+async function updateBeginTaskButton(task, pendingTaskTabId) {
+  const button = $('beginTaskBtn');
+  try {
+    const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const plan = UiRaterTaskSession.planTaskStart({
+      currentTab,
+      siteUrl: task.site_url,
+      pendingTaskTabId,
+    });
+    button.textContent = plan.action === 'record'
+      ? 'Start Recording'
+      : plan.action === 'wrong-tab'
+        ? 'Return to Task Tab'
+        : 'Open Task Website';
+  } catch {
+    button.textContent = 'Begin Task';
+  }
 }
 
 function showPreTrack() {
@@ -137,46 +157,50 @@ $('startBtn').addEventListener('click', async () => {
   }
 });
 
-// Begin task — open site, start recording and tracking
-$('beginTaskBtn').addEventListener('click', async () => {
-  const task = state.tasks[state.currentTaskIndex];
-  const now = Date.now();
-  const viewStart = new Date().toISOString();
-
-  // Persist tracking state BEFORE navigating
-  await chrome.storage.local.set({
-    _tracking: true,
-    _originTime: now,
-    _viewStart: viewStart,
-  });
-
-  chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
-
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-
-  // Start tab video recording
-  chrome.runtime.sendMessage({ type: 'BEGIN_TASK', tabId: tab.id }, (res) => {
-    if (chrome.runtime.lastError || !res?.ok) {
-      console.warn('Recording failed to start:', res?.error || chrome.runtime.lastError?.message);
-    }
-  });
-
-  if (task.site_url) {
-    await chrome.tabs.update(tab.id, { url: task.site_url });
-  } else {
-    chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' }, (res) => {
+function sendRuntimeMessage(message) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response) => {
       if (chrome.runtime.lastError) {
-        chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ['content.js'],
-        }).then(() => {
-          chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' });
-        });
+        reject(new Error(chrome.runtime.lastError.message));
+      } else {
+        resolve(response);
       }
     });
-  }
+  });
+}
 
-  showDuringTrack();
+// First invocation opens the task page; the invocation on that page starts capture.
+$('beginTaskBtn').addEventListener('click', async () => {
+  const task = state.tasks[state.currentTaskIndex];
+  $('beginTaskBtn').disabled = true;
+  $('beginTaskBtn').textContent = 'Starting…';
+
+  try {
+    if (!task.site_url) throw new Error('This task does not have a website URL.');
+    const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const result = await sendRuntimeMessage({
+      type: 'START_TASK_FLOW',
+      siteUrl: task.site_url,
+      currentTab: {
+        id: currentTab.id,
+        url: currentTab.url,
+        windowId: currentTab.windowId,
+      },
+    });
+
+    if (!result?.ok) {
+      throw new Error(result?.error || 'Failed to start the task recording.');
+    }
+    if (result.status === 'recording') {
+      showDuringTrack();
+    }
+  } catch (err) {
+    showError('taskError', err.message);
+  } finally {
+    $('beginTaskBtn').disabled = false;
+    const pending = await chrome.storage.local.get(['_pendingTaskTabId']);
+    await updateBeginTaskButton(task, pending._pendingTaskTabId);
+  }
 });
 
 // Done — stop tracking and submit
@@ -186,19 +210,23 @@ $('doneBtn').addEventListener('click', async () => {
 
   try {
     // Tell content script to flush remaining interactions and stop
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const stored = await chrome.storage.local.get([
+      '_originTime', '_viewStart', '_taskTabId',
+    ]);
+    const taskTabId = stored._taskTabId;
     try {
-      await new Promise((resolve) => {
-        chrome.tabs.sendMessage(tab.id, { type: 'STOP_TRACKING' }, () => resolve());
-        setTimeout(resolve, 1000);
-      });
+      if (taskTabId) {
+        await new Promise((resolve) => {
+          chrome.tabs.sendMessage(taskTabId, { type: 'STOP_TRACKING' }, () => resolve());
+          setTimeout(resolve, 1000);
+        });
+      }
     } catch { /* content script may be on a different page */ }
 
     // Small delay to let the flush arrive at background
     await new Promise(r => setTimeout(r, 300));
 
     // Read timing from storage (persisted by Begin Task)
-    const stored = await chrome.storage.local.get(['_originTime', '_viewStart']);
     const durationMs = Date.now() - (stored._originTime || Date.now());
     const viewStart = stored._viewStart || new Date().toISOString();
 
@@ -215,7 +243,9 @@ $('doneBtn').addEventListener('click', async () => {
     }
 
     // Clear tracking state
-    await chrome.storage.local.remove(['_tracking', '_originTime', '_viewStart']);
+    await chrome.storage.local.remove([
+      '_tracking', '_originTime', '_viewStart', '_taskTabId', '_pendingTaskTabId',
+    ]);
 
     state.currentTaskIndex++;
     if (result.finished) {
@@ -233,13 +263,17 @@ $('doneBtn').addEventListener('click', async () => {
 
 // Skip task
 $('skipBtn').addEventListener('click', async () => {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const stored = await chrome.storage.local.get(['_taskTabId', '_pendingTaskTabId']);
   try {
-    chrome.tabs.sendMessage(tab.id, { type: 'STOP_TRACKING' });
+    if (stored._taskTabId) {
+      chrome.tabs.sendMessage(stored._taskTabId, { type: 'STOP_TRACKING' });
+    }
   } catch { /* ignore */ }
   chrome.runtime.sendMessage({ type: 'SKIP_TASK' });
   chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
-  await chrome.storage.local.remove(['_tracking', '_originTime', '_viewStart']);
+  await chrome.storage.local.remove([
+    '_tracking', '_originTime', '_viewStart', '_taskTabId', '_pendingTaskTabId',
+  ]);
 
   state.currentTaskIndex++;
   await chrome.storage.local.set({ currentTaskIndex: state.currentTaskIndex });
@@ -255,7 +289,7 @@ $('skipBtn').addEventListener('click', async () => {
 $('resetBtn').addEventListener('click', async () => {
   await chrome.storage.local.remove([
     'participantId', 'tasks', 'currentTaskIndex',
-    '_tracking', '_originTime', '_viewStart',
+    '_tracking', '_originTime', '_viewStart', '_taskTabId', '_pendingTaskTabId',
   ]);
   chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
   state = { participantId: '', serverUrl: state.serverUrl, tasks: null, currentTaskIndex: 0 };

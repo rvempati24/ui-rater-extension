@@ -238,7 +238,7 @@
   // Listen for messages from popup / background
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'START_TRACKING') {
-      startTracking(null);
+      startTracking(msg.session || null);
       sendResponse({ ok: true });
     } else if (msg.type === 'STOP_TRACKING') {
       flushToBackground();
