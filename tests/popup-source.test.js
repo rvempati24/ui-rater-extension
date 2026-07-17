@@ -25,3 +25,13 @@ test('popup supports participant runs and retry without advancing the task', () 
   assert.match(html, /Start a new run/);
   assert.match(html, /Discard &amp; Retry|Discard & Retry/);
 });
+
+test('popup can clear extension cache without calling a server reset', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'popup.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'popup.html'), 'utf8');
+
+  assert.match(html, /id="clearCacheBtn"/);
+  assert.match(source, /chrome\.storage\.local\.clear\(\)/);
+  assert.match(source, /Recording is active/);
+  assert.doesNotMatch(source, /fetch\([^\n]*\/api\/reset/);
+});

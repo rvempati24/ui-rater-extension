@@ -74,7 +74,7 @@ npm run dev
 4. Enter the participant ID and `http://localhost:3000` in the popup.
 5. Complete a synthetic task and click **Done**.
 
-Reloading the extension does not clear its saved participant ID, task list, or current task position because these values live in `chrome.storage.local`. After a completed run, use **Start Over** to clear the browser-side state. During debugging, removing and loading the extension again also creates a clean browser-side state; it does not remove server recordings.
+Reloading the extension does not clear its saved participant ID, task list, or current task position because these values live in `chrome.storage.local`. Use the always-visible **Clear Cache** button to clear only this extension's browser state; it never calls the server reset API and does not delete saved traces, screenshots, videos, participant folders, or HF data. Cache clearing is blocked while recording—click **Done** or **Discard & Retry** first. After clearing, enter the participant ID and server URL and load tasks again. **Start Over** clears the same run-selection state after a completed run. Removing and loading the extension again also creates a clean browser-side state.
 
 ## End-to-end local pilot
 

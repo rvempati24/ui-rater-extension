@@ -20,6 +20,17 @@
       align-items: center;
       gap: 8px;
     }
+    .header-title { flex: 1; }
+    .header-action {
+      border: 1px solid rgba(255,255,255,0.65);
+      background: transparent;
+      color: white;
+      border-radius: 5px;
+      padding: 4px 7px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .header-action:hover { background: rgba(255,255,255,0.15); }
     .header .status-dot {
       width: 8px; height: 8px;
       border-radius: 50%;
@@ -129,7 +140,8 @@
 <body>
   <div class="header">
     <div class="status-dot" id="statusDot"></div>
-    <span>UI Rater — Task Tracker</span>
+    <span class="header-title">UI Rater — Task Tracker</span>
+    <button class="header-action" id="clearCacheBtn" title="Clear only this extension's browser cache">Clear Cache</button>
   </div>
 
   <!-- Setup screen -->

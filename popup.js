@@ -104,6 +104,7 @@ function showDone() {
 
 function showError(containerId, msg) {
   const el = $(containerId);
+  el.style.color = '#dc2626';
   el.textContent = msg;
   el.classList.remove('hidden');
   setTimeout(() => el.classList.add('hidden'), 5000);
@@ -176,6 +177,41 @@ function sendRuntimeMessage(message) {
     });
   });
 }
+
+async function clearExtensionCache() {
+  const stored = await chrome.storage.local.get(['_tracking']);
+  if (stored._tracking) {
+    const message = 'Recording is active. Click Done or Discard & Retry before clearing the cache.';
+    if (!$('taskScreen').classList.contains('hidden')) showError('taskError', message);
+    else window.alert(message);
+    return;
+  }
+  const confirmed = window.confirm(
+    'Clear this extension cache? Saved server traces, screenshots, and videos will not be deleted.'
+  );
+  if (!confirmed) return;
+
+  await chrome.storage.local.clear();
+  chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
+  state = {
+    participantId: '', serverUrl: DEFAULT_SERVER, tasks: null, currentTaskIndex: 0, runId: '',
+  };
+  showSetup();
+  $('participantInput').value = '';
+  $('serverInput').value = DEFAULT_SERVER;
+  $('setupError').textContent = 'Extension cache cleared. Server recordings were not changed.';
+  $('setupError').style.color = '#15803d';
+  $('setupError').classList.remove('hidden');
+  setTimeout(() => $('setupError').classList.add('hidden'), 5000);
+}
+
+$('clearCacheBtn').addEventListener('click', () => {
+  clearExtensionCache().catch((error) => {
+    const message = error instanceof Error ? error.message : 'Could not clear extension cache.';
+    if (!$('taskScreen').classList.contains('hidden')) showError('taskError', message);
+    else showError('setupError', message);
+  });
+});
 
 // First invocation opens the task page; the invocation on that page starts capture.
 $('beginTaskBtn').addEventListener('click', async () => {
