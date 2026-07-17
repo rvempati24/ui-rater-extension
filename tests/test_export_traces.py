@@ -22,7 +22,17 @@ class ExportTraceTests(unittest.TestCase):
             complete.mkdir(parents=True)
             partial.mkdir(parents=True)
             (complete / "manifest.json").write_text(
-                json.dumps({"session_id": complete.name, "status": "complete"}), encoding="utf-8"
+                json.dumps({
+                    "session_id": complete.name,
+                    "status": "complete",
+                    "participant_id": "P001",
+                    "attempt_id": "attempt-002",
+                    "website": {
+                        "model": "deepseek-v4-flash-free",
+                        "website": "allrecipes",
+                        "run_id": "20260625-090547-allrecipes",
+                    },
+                }), encoding="utf-8"
             )
             (complete / "trace.json").write_text("{}", encoding="utf-8")
             (partial / "manifest.json").write_text(
@@ -35,9 +45,25 @@ class ExportTraceTests(unittest.TestCase):
 
             destination = root / "export"
             export_traces.copy_sessions(selected, destination)
-            self.assertTrue((destination / complete.name / "trace.json").exists())
-            self.assertFalse((destination / partial.name).exists())
+            relative = Path(
+                "deepseek-v4-flash-free", "allrecipes", "20260625-090547-allrecipes",
+                "attempts", "attempt-002", "users", "P001", "sessions", complete.name,
+            )
+            self.assertTrue((destination / relative / "trace.json").exists())
+            self.assertFalse(any(destination.rglob(partial.name)))
             self.assertEqual(len((destination / "sessions.jsonl").read_text().splitlines()), 1)
+
+    def test_export_path_sanitizes_manifest_segments(self):
+        relative = export_traces.session_export_path({
+            "session_id": "abc",
+            "participant_id": "../user one",
+            "attempt_id": "pilot/1",
+            "app_id": "run",
+        })
+        self.assertEqual(
+            relative.as_posix(),
+            "unknown-model/unknown-site/run/attempts/pilot-1/users/user-one/sessions/abc",
+        )
 
 
 if __name__ == "__main__":

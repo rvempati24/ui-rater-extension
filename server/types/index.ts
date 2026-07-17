@@ -72,6 +72,27 @@ export interface SessionManifest {
   interaction_count?: number;
   snapshot_count?: number;
   completed_at?: string;
+  attempt_id?: string;
+  website?: WebsiteMetadata;
+}
+
+export interface WebsiteMetadata {
+  schema_version: 1;
+  source: 'local' | 'huggingface';
+  repo_id?: string;
+  revision?: string;
+  commit_sha?: string;
+  model: string;
+  website: string;
+  run_id: string;
+  path_in_repo?: string;
+  source_url?: string;
+  source_dir?: string;
+  task_file?: string;
+  deployment_dir?: string;
+  metadata_file?: string;
+  existing_metadata_files?: string[];
+  file_count?: number;
 }
 
 export interface SnapshotMetadata {

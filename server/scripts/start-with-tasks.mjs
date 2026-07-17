@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   loadMind2WebPrompts,
@@ -12,10 +12,18 @@ import {
 } from './task-selection.mjs';
 
 const serverDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const repoDir = path.resolve(serverDir, '..');
 
 function usage() {
   return `Usage: npm run dev:tasks -- [options]\n\n` +
-    `  --tasks-json <file>       Source task JSON (default: config/trials-config.json)\n` +
+    `  --website-dir <folder>    Prefer a local website run containing dist/ and trials-config.json\n` +
+    `  --tasks-json <file>       Override task JSON inside a local website run\n` +
+    `  --hf-website <path>       Exact remote model/website/run-id\n` +
+    `  --hf-model <name>         Restrict random remote selection by model\n` +
+    `  --hf-site <name>          Restrict random remote selection by website\n` +
+    `  --hf-revision <revision>  Dataset revision (default: prompt-userflow-regen-20260624)\n` +
+    `  --website-cache <folder>  Download cache (default: .website-cache)\n` +
+    `  --attempt <id>            Attempt label stored with traces (default: attempt-001)\n` +
     `  --all                     Run all available tasks (default)\n` +
     `  --random [n]              Randomly run one task, or n tasks\n` +
     `  --tasks <1 3 5|1,3,5>     Run specified 1-based source task numbers\n` +
@@ -40,7 +48,14 @@ export function parseArgs(args) {
     else if (arg === '--all') options.all = true;
     else if (arg === '--mind2web') options.mind2webOnly = true;
     else if (arg === '--dry-run') options.dryRun = true;
+    else if (arg === '--website-dir') options.websiteDir = takeValue(args, index++, arg);
     else if (arg === '--tasks-json') options.taskFile = takeValue(args, index++, arg);
+    else if (arg === '--hf-website') options.hfWebsite = takeValue(args, index++, arg);
+    else if (arg === '--hf-model') options.hfModel = takeValue(args, index++, arg);
+    else if (arg === '--hf-site') options.hfSite = takeValue(args, index++, arg);
+    else if (arg === '--hf-revision') options.hfRevision = takeValue(args, index++, arg);
+    else if (arg === '--website-cache') options.websiteCache = takeValue(args, index++, arg);
+    else if (arg === '--attempt') options.attempt = takeValue(args, index++, arg);
     else if (arg === '--mind2web-tasks') options.mind2webFile = takeValue(args, index++, arg);
     else if (arg === '--seed') options.seed = takeValue(args, index++, arg);
     else if (arg === '--random') {
@@ -58,7 +73,108 @@ export function parseArgs(args) {
   if (options.randomCount != null && options.taskValues.length) {
     throw new Error('--random and --tasks are mutually exclusive.');
   }
+  const hasHfSelector = options.hfWebsite || options.hfModel || options.hfSite;
+  if (options.websiteDir && hasHfSelector) {
+    throw new Error('--website-dir cannot be combined with Hugging Face website selectors.');
+  }
+  if (options.taskFile && hasHfSelector) {
+    throw new Error('--tasks-json cannot be combined with Hugging Face website selectors.');
+  }
   return options;
+}
+
+function runPython(args) {
+  const configured = process.env.PYTHON ? [{ command: process.env.PYTHON, prefix: [] }] : [];
+  const candidates = process.platform === 'win32'
+    ? [...configured, { command: 'py', prefix: ['-3'] }, { command: 'python', prefix: [] }]
+    : [...configured, { command: 'python3', prefix: [] }, { command: 'python', prefix: [] }];
+  let lastResult;
+  for (const candidate of candidates) {
+    const result = spawnSync(candidate.command, [...candidate.prefix, ...args], {
+      cwd: repoDir,
+      env: process.env,
+      encoding: 'utf8',
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    lastResult = result;
+    if (result.error || result.status == null) continue;
+    break;
+  }
+  if (!lastResult) throw new Error('Python 3 was not found. Set PYTHON to its executable path.');
+  if (lastResult.error) throw new Error(
+    `Python 3 could not be started: ${lastResult.error.message}. Set PYTHON to its executable path.`
+  );
+  if (lastResult.status !== 0) throw new Error(
+    (lastResult.stderr || lastResult.stdout).trim() || 'Website downloader failed.'
+  );
+  const jsonLine = lastResult.stdout.trim().split(/\r?\n/).reverse().find((line) => line.startsWith('{'));
+  if (!jsonLine) throw new Error('Website downloader returned no metadata.');
+  return JSON.parse(jsonLine);
+}
+
+async function localWebsite(options) {
+  let sourceDir;
+  if (options.websiteDir) sourceDir = path.resolve(serverDir, options.websiteDir);
+  else if (options.taskFile) {
+    const candidate = path.dirname(path.resolve(serverDir, options.taskFile));
+    if (await fsp.stat(path.join(candidate, 'dist', 'index.html')).then(() => true, () => false)) {
+      sourceDir = candidate;
+    } else {
+      throw new Error('--tasks-json is not inside a website run with dist/. Add --website-dir or choose an HF website.');
+    }
+  }
+  if (!sourceDir) return undefined;
+
+  const taskFile = path.resolve(serverDir, options.taskFile ?? path.join(sourceDir, 'trials-config.json'));
+  const tasks = await loadTaskArray(taskFile);
+  const runIds = [...new Set(tasks.map((task) => task.plain_app).filter(Boolean))];
+  if (runIds.length > 1) throw new Error('A website task file must reference exactly one plain_app run.');
+  const runId = runIds[0] ?? path.basename(sourceDir);
+  const deploymentDir = path.join(serverDir, 'public', 'apps', runId);
+  const dist = path.join(sourceDir, 'dist');
+  if (!await fsp.stat(path.join(dist, 'index.html')).then(() => true, () => false)) {
+    throw new Error(`Local website has no dist/index.html: ${sourceDir}`);
+  }
+
+  let existing = {};
+  const existingFile = path.join(sourceDir, 'ui-rater-website.json');
+  try { existing = JSON.parse(await fsp.readFile(existingFile, 'utf8')); } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  if (!options.dryRun) {
+    await fsp.mkdir(deploymentDir, { recursive: true });
+    await fsp.cp(dist, deploymentDir, { recursive: true, force: true });
+  }
+  const { files, ...compactExisting } = existing;
+  return {
+    schema_version: 1,
+    source: 'local',
+    model: 'local',
+    website: tasks[0]?.group ?? path.basename(path.dirname(sourceDir)),
+    run_id: runId,
+    ...compactExisting,
+    file_count: compactExisting.file_count ?? (Array.isArray(files) ? files.length : undefined),
+    source_dir: sourceDir,
+    task_file: taskFile,
+    deployment_dir: deploymentDir,
+    metadata_file: await fsp.stat(existingFile).then(() => existingFile, () => undefined),
+  };
+}
+
+function hfWebsite(options, seed) {
+  const cacheDir = path.resolve(serverDir, options.websiteCache ?? '.website-cache');
+  const args = [
+    path.join(repoDir, 'scripts', 'resolve_hf_website.py'),
+    '--revision', options.hfRevision ?? 'prompt-userflow-regen-20260624',
+    '--seed', seed,
+    '--cache-dir', cacheDir,
+    '--deploy-dir', path.join(serverDir, 'public', 'apps'),
+  ];
+  if (options.hfWebsite) args.push('--website', options.hfWebsite);
+  if (options.hfModel) args.push('--model', options.hfModel);
+  if (options.hfSite) args.push('--site', options.hfSite);
+  if (options.dryRun) args.push('--no-deploy');
+  return runPython(args);
 }
 
 async function main() {
@@ -68,9 +184,10 @@ async function main() {
     return;
   }
 
-  const taskFile = path.resolve(serverDir, options.taskFile ?? 'config/trials-config.json');
-  const mind2webFile = options.mind2webFile ? path.resolve(serverDir, options.mind2webFile) : undefined;
   const seed = options.seed ?? randomBytes(8).toString('hex');
+  const website = await localWebsite(options) ?? hfWebsite(options, seed);
+  const taskFile = path.resolve(website.task_file);
+  const mind2webFile = options.mind2webFile ? path.resolve(serverDir, options.mind2webFile) : undefined;
   const tasks = await loadTaskArray(taskFile);
   const mind2webPrompts = options.mind2webOnly
     ? await loadMind2WebPrompts(taskFile, mind2webFile)
@@ -83,6 +200,11 @@ async function main() {
     seed,
   });
 
+  console.log(`Website: ${website.model}/${website.website}/${website.run_id} (${website.source})`);
+  if (website.source === 'huggingface') {
+    console.log(`HF source: ${website.repo_id}@${website.revision}/${website.path_in_repo}`);
+    console.log(`Website selection seed: ${seed}`);
+  }
   console.log(`Task source: ${taskFile}`);
   console.log(`Selected ${selected.tasks.length}/${tasks.length} task(s): ${selected.sourceIndices.join(', ')}`);
   if (options.randomCount != null) console.log(`Random seed: ${seed}`);
@@ -92,17 +214,27 @@ async function main() {
   const runtimeDir = path.join(serverDir, '.runtime');
   await fsp.mkdir(runtimeDir, { recursive: true });
   const runtimeFile = path.join(runtimeDir, `trials-config-${process.pid}.json`);
+  const metadataFile = path.join(runtimeDir, `website-metadata-${process.pid}.json`);
   await fsp.writeFile(runtimeFile, `${JSON.stringify(selected.tasks, null, 2)}\n`, 'utf8');
+  await fsp.writeFile(metadataFile, `${JSON.stringify(website, null, 2)}\n`, 'utf8');
 
   const nextBin = path.join(serverDir, 'node_modules', 'next', 'dist', 'bin', 'next');
   const child = spawn(process.execPath, [nextBin, 'dev'], {
     cwd: serverDir,
-    env: { ...process.env, UI_RATER_TRIALS_CONFIG: runtimeFile },
+    env: {
+      ...process.env,
+      UI_RATER_TRIALS_CONFIG: runtimeFile,
+      UI_RATER_WEBSITE_SOURCE_DIR: website.source_dir,
+      UI_RATER_WEBSITE_METADATA_FILE: metadataFile,
+      UI_RATER_WEBSITE_RUN_ID: website.run_id,
+      UI_RATER_ATTEMPT: options.attempt ?? 'attempt-001',
+    },
     stdio: 'inherit',
   });
 
   const cleanup = () => {
     try { fs.unlinkSync(runtimeFile); } catch (error) { if (error?.code !== 'ENOENT') console.error(error); }
+    try { fs.unlinkSync(metadataFile); } catch (error) { if (error?.code !== 'ENOENT') console.error(error); }
   };
   process.on('exit', cleanup);
   process.on('SIGINT', () => child.kill('SIGINT'));

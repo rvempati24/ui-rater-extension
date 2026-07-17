@@ -19,8 +19,8 @@ It intentionally does not include a database, job queue, multi-agent pipeline, a
 
 - Chrome 116+
 - Node.js 18+
-- Python 3.10+ only for trace export
-- `huggingface_hub` only when uploading to Hugging Face
+- Python 3.10+ for Hugging Face website download and trace export
+- `huggingface_hub` for website download or trace upload
 
 ## Start the server
 
@@ -56,38 +56,50 @@ npm run dev
 
 ## Select tasks when starting the server
 
-Use `dev:tasks` to point the server at any website's `trials-config.json` and choose the tasks for that run. The source JSON is never modified; the launcher writes an ignored temporary selection and passes its path to Next.js.
+Use `dev:tasks` to select both a synthetic website and its tasks. A local website source takes priority. If none is provided, the launcher selects and caches a run from [`uxBench/website-generation`](https://huggingface.co/datasets/uxBench/website-generation/tree/prompt-userflow-regen-20260624). Install the downloader once with `python -m pip install huggingface_hub`.
 
-Run every task (the default):
+Prefer a local website and run every task:
 
 ```bash
 cd server
-npm run dev:tasks -- --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --all
+npm run dev:tasks -- --website-dir "../../../uxBench/allrecipes" --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --all --attempt pilot-001
 ```
 
 Run one random task, or a reproducible random sample of five:
 
 ```bash
-npm run dev:tasks -- --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --random
-npm run dev:tasks -- --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --random 5 --seed pilot-01
+npm run dev:tasks -- --website-dir "../../../uxBench/allrecipes" --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --random
+npm run dev:tasks -- --website-dir "../../../uxBench/allrecipes" --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --random 5 --seed pilot-01
 ```
 
 Run source tasks 1, 3, and 5 in that order:
 
 ```bash
-npm run dev:tasks -- --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --tasks 1 3 5
+npm run dev:tasks -- --website-dir "../../../uxBench/allrecipes" --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --tasks 1 3 5
 ```
 
 Run all original Mind2Web tasks, or randomly choose three of them:
 
 ```bash
-npm run dev:tasks -- --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --mind2web
-npm run dev:tasks -- --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --mind2web --random 3 --seed pilot-01
+npm run dev:tasks -- --website-dir "../../../uxBench/allrecipes" --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --mind2web
+npm run dev:tasks -- --website-dir "../../../uxBench/allrecipes" --tasks-json "../../../uxBench/allrecipes/trials-config.full.json" --mind2web --random 3 --seed pilot-01
 ```
 
-`--mind2web` recognizes task metadata (`source`, `origin`, or `task_source` set to `mind2web`, or `is_mind2web: true`). It also automatically matches prompts against an adjacent `mind2web_tasks.txt`; use `--mind2web-tasks <file>` to supply a different list. Add `--dry-run` to inspect the selected source task numbers without starting the server, and `--help` for all options.
+Download an exact Hugging Face run, or randomly select a run with optional filters:
 
-The commands are identical in PowerShell, Linux, and macOS. Task numbers always refer to positions in the source JSON, while the selected run is reindexed from 1. Use a new participant ID after changing a selection because an existing participant keeps the trials created on their first request.
+```bash
+npm run dev:tasks -- --hf-website "deepseek-v4-flash-free/allrecipes/20260625-090547-allrecipes" --tasks 1 3 5
+npm run dev:tasks -- --hf-model "qwen3.7-plus" --hf-site "allrecipes" --random 2 --seed pilot-01
+npm run dev:tasks -- --random --seed pilot-01
+```
+
+In the last command, the website and one task are both selected reproducibly. `--random` controls task sampling; remote website selection is automatically random whenever no local or exact HF run is supplied.
+
+`--mind2web` recognizes task metadata (`source`, `origin`, or `task_source` set to `mind2web`, or `is_mind2web: true`). It also automatically matches prompts against an adjacent `mind2web_tasks.txt`; use `--mind2web-tasks <file>` to supply a different list. Add `--dry-run` to provision/resolve the website and inspect selected tasks without starting Next.js, and `--help` for all options.
+
+Downloaded runs are cached under `server/.website-cache/` and their `dist/` files are deployed under `server/public/apps/<run-id>/`. The launcher records repository, revision, commit SHA, `model/website/run-id`, source URL, file metadata, and pre-existing metadata filenames in `ui-rater-website.json`. A compact copy plus `attempt_id` is retained in each completed session manifest.
+
+The commands are identical in PowerShell, Linux, and macOS. Task numbers always refer to positions in the source JSON, while the selected run is reindexed from 1. Use a new participant ID after changing a selection because an existing participant keeps the trials created on their first request. Public downloads need no token; `HF_TOKEN` is used automatically when the source dataset requires authentication.
 
 ## Session output
 
@@ -181,7 +193,7 @@ Copy `scripts/trace-export.example.json` to a local config file and edit it:
   "local_export_dir": "exports/ux-task-trace",
   "upload_hf": false,
   "hf_repo_id": "uxBench/ux-task-trace",
-  "hf_path_prefix": "sessions"
+  "hf_path_prefix": ""
 }
 ```
 
@@ -192,11 +204,26 @@ The settings mean:
 - `local_export_dir`: path for that package;
 - `upload_hf`: enable a live Hugging Face write;
 - `hf_repo_id`: dataset repository, default `uxBench/ux-task-trace`;
-- `hf_path_prefix`: remote directory prefix, default `sessions`.
+- `hf_path_prefix`: optional directory above the structured hierarchy; empty by default.
 
 Relative paths are resolved from the extension repository root. Environment variables can override the config: `UI_RATER_SESSIONS_DIR`, `UI_RATER_KEEP_LOCAL_EXPORT`, `UI_RATER_LOCAL_EXPORT_DIR`, `UI_RATER_UPLOAD_HF`, `HF_DATASET_REPO`, and `HF_PATH_PREFIX`.
 
 The exporter processes only sessions whose manifest status is `complete`. It never automatically deletes the canonical session directory. When `keep_local_export=false` and upload is enabled, it uses a temporary staging directory and retains no additional export copy.
+
+Both local exports and Hugging Face uploads use this layout:
+
+```text
+<model>/<website>/<run-id>/
+  attempts/<attempt-id>/
+    users/<participant-id>/
+      sessions/<session-id>/
+        manifest.json
+        trace.json
+        snapshots/
+        analysis/
+```
+
+This preserves the same first three levels as `website-generation`. `sessions.jsonl` at the export root records every manifest and its exact `export_path`. Older sessions without website metadata are placed under explicit `unknown-model/unknown-site` fallback segments instead of being discarded.
 
 ## Export on Windows
 

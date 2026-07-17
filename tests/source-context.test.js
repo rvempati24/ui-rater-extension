@@ -44,3 +44,19 @@ test('source context rejects a root for a different app', async () => {
     fs.rmSync(fixture, { recursive: true, force: true });
   }
 });
+
+test('source context accepts a server-declared run id for a differently named local folder', async () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-rater-source-'));
+  try {
+    fs.mkdirSync(path.join(fixture, 'src'));
+    fs.writeFileSync(path.join(fixture, 'src', 'App.jsx'), 'export default 1');
+    const moduleUrl = pathToFileURL(path.join(
+      __dirname, '..', 'server', 'lib', 'ux-analysis', 'source-context.ts'
+    )).href;
+    const module = await import(moduleUrl);
+    const result = await module.collectSourceContext(fixture, 'remote-run-id', 'remote-run-id');
+    assert.equal(result.status, 'loaded');
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});

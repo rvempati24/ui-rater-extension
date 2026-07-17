@@ -46,3 +46,21 @@ test('analysis and export entrypoints exist without automatic external writes', 
   assert.equal(exportConfig.upload_hf, false);
   assert.equal(exportConfig.hf_repo_id, 'uxBench/ux-task-trace');
 });
+
+test('completed sessions retain website provenance and attempt metadata', () => {
+  const completeRoute = fs.readFileSync(path.join(
+    root, 'server', 'app', 'api', 'complete-task', 'route.ts'
+  ), 'utf8');
+  const launcher = fs.readFileSync(path.join(
+    root, 'server', 'scripts', 'start-with-tasks.mjs'
+  ), 'utf8');
+  const metadata = fs.readFileSync(path.join(
+    root, 'server', 'lib', 'website-metadata.ts'
+  ), 'utf8');
+  assert.match(completeRoute, /getActiveWebsiteMetadata/);
+  assert.match(completeRoute, /attempt_id:/);
+  assert.match(launcher, /UI_RATER_WEBSITE_METADATA_FILE/);
+  assert.match(launcher, /UI_RATER_WEBSITE_SOURCE_DIR/);
+  assert.match(launcher, /UI_RATER_WEBSITE_RUN_ID/);
+  assert.match(metadata, /delete portable\.source_dir/);
+});

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import re
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -53,15 +54,34 @@ def completed_sessions(sessions_dir: Path) -> list[Path]:
     return result
 
 
+def safe_segment(value: object, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip(".-")
+    return cleaned or fallback
+
+
+def session_export_path(manifest: dict) -> Path:
+    website = manifest.get("website") or {}
+    model = safe_segment(website.get("model"), "unknown-model")
+    site = safe_segment(website.get("website"), "unknown-site")
+    run_id = safe_segment(website.get("run_id") or manifest.get("app_id"), "unknown-run")
+    attempt = safe_segment(manifest.get("attempt_id"), "attempt-001")
+    user = safe_segment(manifest.get("participant_id"), "anonymous")
+    session = safe_segment(manifest.get("session_id"), "unknown-session")
+    return Path(model, site, run_id, "attempts", attempt, "users", user, "sessions", session)
+
+
 def copy_sessions(sessions: list[Path], destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
+    indexed: list[dict] = []
     for source in sessions:
-        shutil.copytree(source, destination / source.name, dirs_exist_ok=True)
+        manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
+        relative = session_export_path(manifest)
+        shutil.copytree(source, destination / relative, dirs_exist_ok=True)
+        indexed.append({**manifest, "export_path": relative.as_posix()})
 
     index_file = destination / "sessions.jsonl"
     with index_file.open("w", encoding="utf-8") as handle:
-        for session in sessions:
-            manifest = json.loads((session / "manifest.json").read_text(encoding="utf-8"))
+        for manifest in indexed:
             handle.write(json.dumps(manifest, ensure_ascii=False) + "\n")
 
 
@@ -116,7 +136,7 @@ def main() -> int:
         upload_hf = False
 
     repo_id = os.getenv("HF_DATASET_REPO", config.get("hf_repo_id", "uxBench/ux-task-trace"))
-    path_prefix = os.getenv("HF_PATH_PREFIX", config.get("hf_path_prefix", "sessions"))
+    path_prefix = os.getenv("HF_PATH_PREFIX", config.get("hf_path_prefix", ""))
     token = os.getenv("HF_TOKEN", "")
     sessions = completed_sessions(sessions_dir)
 

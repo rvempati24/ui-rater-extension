@@ -154,4 +154,5 @@ data/recordings/*
 exports/
 scripts/trace-export.local.json
 server/.runtime/
+server/.website-cache/
 .DS_Store

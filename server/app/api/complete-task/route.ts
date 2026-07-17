@@ -4,6 +4,7 @@ import { InteractionEvent } from '@/types';
 import { getParticipantTrials } from '@/lib/results';
 import { saveSessionTrace } from '@/lib/sessions';
 import { getTrialConfigs } from '@/lib/manifest';
+import { getActiveWebsiteMetadata } from '@/lib/website-metadata';
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
@@ -24,6 +25,7 @@ export async function POST(req: NextRequest) {
     const task = trials?.find((trial) => trial.index === trialIndex);
     if (!task) throw new Error(`Trial ${trialIndex} not found`);
     const taskConfig = (await getTrialConfigs()).find((config) => config.slug === task.slug);
+    const website = await getActiveWebsiteMetadata();
 
     await saveSessionTrace(sessionId, Array.isArray(interactions) ? interactions : [], {
       status: 'complete',
@@ -35,6 +37,8 @@ export async function POST(req: NextRequest) {
       view_start,
       duration_ms,
       completed_at: new Date().toISOString(),
+      attempt_id: process.env.UI_RATER_ATTEMPT || 'attempt-001',
+      website,
     });
 
     await withResultsLock(async (data) => {

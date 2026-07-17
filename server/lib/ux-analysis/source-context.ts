@@ -41,7 +41,8 @@ async function walk(root: string, current: string, output: string[]): Promise<vo
 
 export async function collectSourceContext(
   configuredRoot = process.env.UI_RATER_WEBSITE_SOURCE_DIR,
-  expectedAppId = ''
+  expectedAppId = '',
+  configuredRunId = process.env.UI_RATER_WEBSITE_RUN_ID || ''
 ): Promise<SourceContext> {
   if (!configuredRoot) {
     return { status: 'not_configured', files: [], total_characters: 0, truncated: false };
@@ -50,7 +51,7 @@ export async function collectSourceContext(
   const root = await fs.realpath(path.resolve(configuredRoot));
   const rootStat = await fs.stat(root);
   if (!rootStat.isDirectory()) throw new Error('UI_RATER_WEBSITE_SOURCE_DIR is not a directory');
-  if (expectedAppId && path.basename(root) !== expectedAppId) {
+  if (expectedAppId && path.basename(root) !== expectedAppId && configuredRunId !== expectedAppId) {
     throw new Error(
       `Configured website source "${path.basename(root)}" does not match session app "${expectedAppId}"`
     );
