@@ -60,7 +60,7 @@ An assignment may have many completed or invalidated attempts, but at most one a
 6. The run is completed when its required assignments have accepted attempts, or it is explicitly aborted.
 7. Old runs/participants can be archived without affecting exports or files.
 
-Normal analysis and Hugging Face export should include accepted attempts by default. An audit export may opt into invalidated and failed attempts.
+Normal analysis and Hugging Face export should include accepted attempts by default. An audit export may opt into invalidated and failed attempts. The Hugging Face hierarchy follows the same participant/run/assignment/attempt ownership model rather than organizing traces under website/model directories.
 
 ## Operator actions
 
@@ -101,6 +101,19 @@ SQLite provides transactions, uniqueness constraints, indexed lookup, and safe c
 
 Every state-changing admin operation should append an `audit_events` record with time, action, target, prior/new state, reason, and operator identity when authentication is later added.
 
+## Hugging Face synchronization
+
+[`HF_PARTICIPANT_DATASET_V2.md`](HF_PARTICIPANT_DATASET_V2.md) defines the target layout for `uxBench/ux-task-trace`. Its path hierarchy is:
+
+```text
+participants/<participant-id>/
+  runs/<run-id>/
+    tasks/<position>-<assignment-id>/
+      attempts/<number>-<attempt-id>/
+```
+
+Website/model provenance is frozen in `run.json` and copied into query indexes; it is no longer the top-level storage key. The default synchronization unit is one completed run, and the default export mode contains only its accepted attempts. Each upload records the HF commit SHA locally so participant/run state can be traced to an exact dataset revision.
+
 ## Deletion policy
 
 Invalidation and archival are the default recovery tools.
@@ -137,14 +150,16 @@ The extension-facing endpoints accept stable IDs rather than filesystem paths. A
 3. Add `run_id`, `assignment_id`, and `attempt_id` to new session manifests while keeping current fields for compatibility.
 4. Update `/api/tasks` and the extension to operate on a selected run rather than treating `participant_id` as the assignment key.
 5. Add retry/invalidate/restore operations and the local admin page.
-6. Make the exporter select accepted attempts by default.
-7. Keep `data/results.json` as a read-only compatibility projection until downstream consumers move to the new API/database.
+6. Replace the legacy website-first exporter with the participant-first layout on a dedicated `participant-v2` HF revision; select accepted attempts by default.
+7. Validate counts and checksums, then switch the dataset default revision only after existing consumers pass migration checks.
+8. Keep `data/results.json` as a read-only compatibility projection until downstream consumers move to the new API/database.
 
 ## MVP acceptance criteria
 
 - One participant can complete two independent runs with different task selections.
 - A failed task can be retried, with both attempts retained and only one accepted.
 - Invalidating/restoring an attempt changes export eligibility without deleting files.
+- A completed run exports under the matching participant/run path and records its HF commit SHA locally.
 - Browser **Start Over** cannot delete or reset server data.
 - Concurrent completions cannot lose another participant's update.
 - Every state transition has an audit event.

@@ -166,7 +166,7 @@ The operator workflow would be:
 3. Mark bad attempts invalid with a reason, restore them if needed, or accept the good attempt. Invalid attempts remain auditable and are excluded from normal exports.
 4. Complete, abort, or archive the run. Use soft deletion by default; hard deletion requires an explicit attempt/session target and confirmation.
 
-The recommended MVP uses SQLite for participant/run/attempt metadata while keeping screenshots, traces, analyses, and WebM files in the existing session directories. A small local admin page/API should support creating runs, retrying tasks, invalidating/restoring attempts, and archiving participants. The full schema, lifecycle, API sketch, migration steps, and acceptance criteria are in [`docs/PARTICIPANT_MANAGEMENT_V2.md`](docs/PARTICIPANT_MANAGEMENT_V2.md). This v2 section is a design proposal, not functionality already present in the baseline.
+The recommended MVP uses SQLite for participant/run/attempt metadata while keeping screenshots, traces, analyses, and WebM files in the existing session directories. A small local admin page/API should support creating runs, retrying tasks, invalidating/restoring attempts, and archiving participants. The full local schema, lifecycle, API sketch, migration steps, and acceptance criteria are in [`docs/PARTICIPANT_MANAGEMENT_V2.md`](docs/PARTICIPANT_MANAGEMENT_V2.md). The corresponding participant-first Hugging Face structure and synchronization rules are in [`docs/HF_PARTICIPANT_DATASET_V2.md`](docs/HF_PARTICIPANT_DATASET_V2.md). These v2 sections are design proposals, not functionality already present in the baseline.
 
 ## Session output
 
@@ -269,6 +269,8 @@ The pilot succeeds at the infrastructure level when every accepted finding cites
 
 ## Configure trace export
 
+> **Layout transition:** the current export script still implements the legacy website-first hierarchy shown below. It should not be used to populate the new canonical participant dataset. Keep `upload_hf: false` while validating locally until the participant-v2 exporter is implemented. The replacement design uses `participant -> run -> task assignment -> attempt` and is specified in [`docs/HF_PARTICIPANT_DATASET_V2.md`](docs/HF_PARTICIPANT_DATASET_V2.md).
+
 Copy `scripts/trace-export.example.json` to a local config file and edit it:
 
 ```json
@@ -295,7 +297,7 @@ Relative paths are resolved from the extension repository root. Environment vari
 
 The exporter processes only sessions whose manifest status is `complete`. It never automatically deletes the canonical session directory. When `keep_local_export=false` and upload is enabled, it uses a temporary staging directory and retains no additional export copy.
 
-Both local exports and Hugging Face uploads use this layout:
+The current legacy exporter uses this layout for backward compatibility:
 
 ```text
 <model>/<website>/<run-id>/
@@ -308,7 +310,24 @@ Both local exports and Hugging Face uploads use this layout:
         analysis/
 ```
 
-This preserves the same first three levels as `website-generation`. `sessions.jsonl` at the export root records every manifest and its exact `export_path`. Older sessions without website metadata are placed under explicit `unknown-model/unknown-site` fallback segments instead of being discarded.
+This legacy layout preserves the same first three levels as `website-generation`. `sessions.jsonl` at the export root records every manifest and its exact `export_path`. Older sessions without website metadata are placed under explicit `unknown-model/unknown-site` fallback segments instead of being discarded.
+
+The participant-v2 target replaces it with:
+
+```text
+participants/<participant-id>/
+  runs/<run-id>/
+    tasks/<position>-<assignment-id>/
+      attempts/<number>-<attempt-id>/
+        attempt.json
+        manifest.json
+        trace.json
+        recording.webm
+        snapshots/
+        analysis/
+```
+
+Website/model provenance moves into `run.json` and root query indexes. The default HF export contains completed runs and accepted attempts; audit mode may include failed or invalidated attempts with their status and reason.
 
 ## Export on Windows
 
