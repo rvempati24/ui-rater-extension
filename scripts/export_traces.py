@@ -57,7 +57,9 @@ def validate_id(value: object, label: str) -> str:
     return text
 
 
-def iter_runs(participants_dir: Path, run_id: str | None = None):
+def iter_runs(
+    participants_dir: Path, run_id: str | None = None, participant_id: str | None = None
+):
     if not participants_dir.exists():
         return
     for participant_dir in sorted(path for path in participants_dir.iterdir() if path.is_dir()):
@@ -66,6 +68,8 @@ def iter_runs(participants_dir: Path, run_id: str | None = None):
             continue
         participant = load_json(participant_file)
         validate_id(participant.get("participant_id"), "participant_id")
+        if participant_id and participant.get("participant_id") != participant_id:
+            continue
         runs_dir = participant_dir / "runs"
         if not runs_dir.exists():
             continue
@@ -150,6 +154,7 @@ def copy_participant_export(
     destination: Path,
     mode: str = "accepted",
     run_id: str | None = None,
+    participant_id: str | None = None,
     require_video: bool = True,
 ) -> list[dict]:
     source_root = participants_dir.resolve()
@@ -168,7 +173,9 @@ def copy_participant_export(
     run_rows: list[dict] = []
     attempt_rows: list[dict] = []
 
-    for participant_dir, participant, source_run_dir, run in iter_runs(participants_dir, run_id):
+    for participant_dir, participant, source_run_dir, run in iter_runs(
+        participants_dir, run_id, participant_id
+    ):
         if mode == "accepted" and run.get("status") != "completed":
             continue
         attempts = selected_attempts(source_run_dir, mode)
@@ -237,6 +244,45 @@ def copy_participant_export(
     return attempt_rows
 
 
+def merge_rows(remote: list[dict], local: list[dict], key: str) -> list[dict]:
+    merged = {str(row[key]): row for row in remote if row.get(key)}
+    merged.update({str(row[key]): row for row in local if row.get(key)})
+    return [merged[value] for value in sorted(merged)]
+
+
+def merge_remote_indexes(folder: Path, repo_id: str, revision: str, token: str) -> None:
+    from huggingface_hub import hf_hub_download
+
+    keys = {"participants": "participant_id", "runs": "run_id", "attempts": "attempt_id"}
+    counts: dict[str, int] = {}
+    for name, key in keys.items():
+        local_file = folder / "index" / f"{name}.jsonl"
+        local = [json.loads(line) for line in local_file.read_text(encoding="utf-8").splitlines() if line]
+        try:
+            remote_file = Path(hf_hub_download(
+                repo_id=repo_id, repo_type="dataset", revision=revision,
+                filename=f"index/{name}.jsonl", token=token,
+            ))
+            remote = [
+                json.loads(line) for line in remote_file.read_text(encoding="utf-8").splitlines()
+                if line
+            ]
+        except Exception as error:
+            if "404" not in str(error) and "not found" not in str(error).lower():
+                raise
+            remote = []
+        merged = merge_rows(remote, local, key)
+        local_file.write_text(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in merged),
+            encoding="utf-8",
+        )
+        counts[name] = len(merged)
+    info_file = folder / "dataset-info.json"
+    info = load_json(info_file)
+    info.update(counts)
+    info_file.write_text(json.dumps(info, indent=2), encoding="utf-8")
+
+
 def upload_to_hf(folder: Path, repo_id: str, revision: str, token: str):
     try:
         from huggingface_hub import HfApi
@@ -248,6 +294,7 @@ def upload_to_hf(folder: Path, repo_id: str, revision: str, token: str):
     except Exception as error:  # branch commonly already exists
         if "already exists" not in str(error).lower() and "409" not in str(error):
             raise
+    merge_remote_indexes(folder, repo_id, revision, token)
     return api.upload_folder(
         repo_id=repo_id, repo_type="dataset", revision=revision,
         folder_path=str(folder), commit_message="Sync participant-v2 UI Rater traces",
@@ -273,6 +320,7 @@ def main() -> int:
     parser.add_argument("--local-export-dir")
     parser.add_argument("--mode", choices=["accepted", "audit"], default=None)
     parser.add_argument("--run-id")
+    parser.add_argument("--participant-id")
     parser.add_argument("--no-video", action="store_true")
     parser.add_argument("--upload-hf", action="store_true")
     parser.add_argument("--no-upload-hf", action="store_true")
@@ -300,7 +348,11 @@ def main() -> int:
     revision = os.getenv("HF_DATASET_REVISION", config.get("hf_revision", "participant-v2"))
     token = os.getenv("HF_TOKEN", "")
 
-    runs = list(iter_runs(participants_dir, args.run_id))
+    if args.participant_id:
+        validate_id(args.participant_id, "participant_id")
+    if args.run_id:
+        validate_id(args.run_id, "run_id")
+    runs = list(iter_runs(participants_dir, args.run_id, args.participant_id))
     eligible = [item for item in runs if mode == "audit" or item[3].get("status") == "completed"]
     print(f"Participant layout: {participants_dir}")
     print(f"Eligible runs: {len(eligible)} (mode={mode})")
@@ -317,6 +369,7 @@ def main() -> int:
         stage = local_dir if keep_local else Path(temp) / "dataset"
         rows = copy_participant_export(
             participants_dir, stage, mode=mode, run_id=args.run_id, require_video=not args.no_video,
+            participant_id=args.participant_id,
         )
         print(f"Exported attempts: {len(rows)}")
         if upload_hf and rows:

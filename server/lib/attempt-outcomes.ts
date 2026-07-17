@@ -1,10 +1,9 @@
-import fs from 'fs/promises';
-import path from 'path';
 import { applyAttemptOutcome, getAttempt } from './participant-store.ts';
 import { projectLegacyTrial } from './participant-state.ts';
 import type { AttemptOutcome } from './participant-state.ts';
 import { updateManifest } from './sessions.ts';
 import { withResultsLock } from './results.ts';
+import { requestLauncherShutdown } from './launcher-shutdown.ts';
 
 export interface RecordAttemptOutcomeInput {
   participantId: string;
@@ -13,16 +12,6 @@ export interface RecordAttemptOutcomeInput {
   attemptId: string;
   outcome: AttemptOutcome;
   reason?: string;
-}
-
-async function requestLauncherShutdown(runId: string): Promise<void> {
-  const file = process.env.UI_RATER_SHUTDOWN_FILE;
-  if (!file) return;
-  const target = path.resolve(file);
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  await fs.writeFile(temporary, JSON.stringify({ run_id: runId, completed_at: new Date().toISOString() }));
-  await fs.rename(temporary, target);
 }
 
 /**
@@ -63,7 +52,9 @@ export async function recordAttemptOutcome(input: RecordAttemptOutcomeInput) {
     Object.assign(trial, projectLegacyTrial(trial, projectedAttempt, result.task));
   });
 
-  if (result.runCompleted) await requestLauncherShutdown(input.runId);
+  if (result.runCompleted && process.env.UI_RATER_DEFER_SHUTDOWN_FOR_COMPLETION_CHOICE !== '1') {
+    await requestLauncherShutdown(input.runId);
+  }
 
   return result;
 }

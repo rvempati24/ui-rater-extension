@@ -149,7 +149,29 @@ test('task launcher auto-closes only after the run-completion marker is written'
   assert.match(launcher, /UI_RATER_SHUTDOWN_FILE/);
   assert.match(launcher, /child\.kill\('SIGINT'\)/);
   assert.match(launcher, /spawnSync\('taskkill', \['\/PID'.*'\/T', '\/F'\]/);
-  assert.match(outcomeService, /if \(result\.runCompleted\) await requestLauncherShutdown/);
+  assert.match(outcomeService, /UI_RATER_DEFER_SHUTDOWN_FOR_COMPLETION_CHOICE/);
+  assert.match(launcher, /UI_RATER_DEFER_SHUTDOWN_FOR_COMPLETION_CHOICE/);
+});
+
+test('completed run offers an explicit server-side Hugging Face upload choice', () => {
+  const popup = fs.readFileSync(path.join(root, 'popup.js'), 'utf8');
+  const html = fs.readFileSync(path.join(root, 'popup.html'), 'utf8');
+  const service = fs.readFileSync(path.join(root, 'server', 'lib', 'hf-run-upload.ts'), 'utf8');
+  const uploadRoute = fs.readFileSync(path.join(
+    root, 'server', 'app', 'api', 'runs', '[runId]', 'hf-upload', 'route.ts'
+  ), 'utf8');
+  const finishRoute = fs.readFileSync(path.join(
+    root, 'server', 'app', 'api', 'runs', '[runId]', 'finish', 'route.ts'
+  ), 'utf8');
+  assert.match(html, /id="uploadHfBtn"/);
+  assert.match(html, /id="keepLocalBtn"/);
+  assert.match(popup, /\/api\/runs\/\$\{encodeURIComponent\(state\.runId\)\}\/hf-upload/);
+  assert.match(popup, /\/api\/runs\/\$\{encodeURIComponent\(state\.runId\)\}\/finish/);
+  assert.match(service, /process\.env\.HF_TOKEN/);
+  assert.doesNotMatch(popup, /HF_TOKEN/);
+  assert.match(service, /found\.run\.status|statusBeforeUpload\.run_status/);
+  assert.match(uploadRoute, /SAFE_ID/);
+  assert.match(finishRoute, /found\.run\.status !== 'completed'/);
 });
 
 test('task launcher serves the synthetic SPA on a separate origin', () => {

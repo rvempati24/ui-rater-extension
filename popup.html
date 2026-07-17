@@ -222,7 +222,13 @@
   <div class="content hidden" id="doneScreen">
     <div class="done-screen">
       <h2>All tasks complete!</h2>
-      <p>Thank you for participating in this study.</p>
+      <p>Your trace, screenshots, and video are saved locally.</p>
+      <div id="hfUploadChoice" style="margin-top:16px;">
+        <p style="margin-bottom:10px;">Upload this completed run to Hugging Face now?</p>
+        <button class="btn btn-primary" id="uploadHfBtn">Upload to Hugging Face</button>
+        <button class="btn" id="keepLocalBtn" style="margin-top:8px;background:#6b7280;color:white;">Keep Local Only</button>
+      </div>
+      <p id="hfUploadStatus" class="hidden" style="margin-top:14px;"></p>
       <button class="btn btn-primary" id="resetBtn" style="margin-top: 16px;">Start Over</button>
     </div>
   </div>

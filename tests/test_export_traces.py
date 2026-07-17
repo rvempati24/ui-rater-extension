@@ -143,6 +143,28 @@ class ExportTraceTests(unittest.TestCase):
                 export_traces.copy_participant_export(participants, destination)
             self.assertTrue((destination / "important.txt").exists())
 
+    def test_participant_and_run_filters_limit_incremental_export(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            participants, _ = make_attempt(root)
+            rows = export_traces.copy_participant_export(
+                participants, root / "selected", participant_id="P001", run_id="run_001"
+            )
+            self.assertEqual(len(rows), 1)
+            empty = export_traces.copy_participant_export(
+                participants, root / "other", participant_id="P999", run_id="run_001"
+            )
+            self.assertEqual(empty, [])
+
+    def test_incremental_index_merge_replaces_same_ids_and_retains_others(self):
+        remote = [{"attempt_id": "att_001", "value": "old"}, {"attempt_id": "att_002"}]
+        local = [{"attempt_id": "att_001", "value": "new"}, {"attempt_id": "att_003"}]
+        self.assertEqual(export_traces.merge_rows(remote, local, "attempt_id"), [
+            {"attempt_id": "att_001", "value": "new"},
+            {"attempt_id": "att_002"},
+            {"attempt_id": "att_003"},
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

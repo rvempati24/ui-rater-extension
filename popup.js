@@ -13,6 +13,7 @@ let operationInFlight = false;
 const ACTION_BUTTON_IDS = [
   'beginTaskBtn', 'doneBtn', 'skipBtn', 'recordingProblemBtn', 'taskSucceededBtn',
   'taskFailedBtn', 'retryTaskBtn', 'doNotRetryBtn', 'retryPendingBtn', 'markProblemBtn',
+  'uploadHfBtn', 'keepLocalBtn',
 ];
 
 function setOperationInFlight(value) {
@@ -27,6 +28,7 @@ async function runExclusive(operation) {
   catch (error) {
     const message = error instanceof Error ? error.message : 'The operation failed.';
     if (!$('taskScreen').classList.contains('hidden')) showError('taskError', message);
+    else if (!$('doneScreen').classList.contains('hidden')) setCompletionStatus(message, true);
     else showError('setupError', message);
   }
   finally { setOperationInFlight(false); }
@@ -44,7 +46,7 @@ async function init() {
       currentTaskIndex: data.currentTaskIndex || 0,
       runId: data.runId || '',
     };
-    if (state.currentTaskIndex >= state.tasks.length) showDone();
+    if (state.currentTaskIndex >= state.tasks.length) await showDone();
     else await showTask();
     return;
   }
@@ -154,11 +156,47 @@ async function updateBeginTaskButton(task, pendingTaskTabId, reusableTaskTabId) 
   }
 }
 
-function showDone() {
+function setCompletionStatus(message, isError = false) {
+  $('hfUploadStatus').textContent = message;
+  $('hfUploadStatus').style.color = isError ? '#dc2626' : '#15803d';
+  $('hfUploadStatus').classList.remove('hidden');
+}
+
+async function showDone() {
   $('setupScreen').classList.add('hidden');
   $('taskScreen').classList.add('hidden');
   $('doneScreen').classList.remove('hidden');
   $('statusDot').classList.add('inactive');
+  $('hfUploadChoice').classList.remove('hidden');
+  $('hfUploadStatus').classList.add('hidden');
+  $('uploadHfBtn').textContent = 'Upload to Hugging Face';
+  $('uploadHfBtn').disabled = false;
+  $('keepLocalBtn').textContent = 'Keep Local Only';
+  const stored = await chrome.storage.local.get(['_completedRunDecision']);
+  const decision = stored._completedRunDecision;
+  if (decision?.runId === state.runId) {
+    $('hfUploadChoice').classList.add('hidden');
+    setCompletionStatus(decision.message);
+    return;
+  }
+  try {
+    const response = await fetch(
+      `${state.serverUrl}/api/runs/${encodeURIComponent(state.runId)}/hf-upload?participantId=${encodeURIComponent(state.participantId)}`
+    );
+    if (!response.ok) return;
+    const status = await response.json();
+    if (status.sync) {
+      $('uploadHfBtn').textContent = 'Already Uploaded';
+      $('uploadHfBtn').disabled = true;
+      $('keepLocalBtn').textContent = 'Finish and Close Localhost';
+      setCompletionStatus(`Uploaded to ${status.sync.repo_id}@${status.sync.revision}. Choose Keep Local Only to finish and close localhost.`);
+    } else if (!status.available) {
+      $('uploadHfBtn').textContent = 'HF Token Not Configured';
+      $('uploadHfBtn').disabled = true;
+    }
+  } catch {
+    // The launcher may already be closed after a previously recorded decision.
+  }
 }
 
 function showError(containerId, msg) {
@@ -224,7 +262,7 @@ async function submitOutcome(outcome, reason) {
 
 async function applyOutcomeResult(result) {
   state.currentTaskIndex = result.currentTaskIndex ?? state.currentTaskIndex;
-  if (result.finished || state.currentTaskIndex >= state.tasks.length) showDone();
+  if (result.finished || state.currentTaskIndex >= state.tasks.length) await showDone();
   else await showTask();
 }
 
@@ -257,7 +295,7 @@ $('startBtn').addEventListener('click', async () => {
       runId: data.runId,
     };
     await chrome.storage.local.set(state);
-    if (state.currentTaskIndex >= state.tasks.length) showDone();
+    if (state.currentTaskIndex >= state.tasks.length) await showDone();
     else await showTask();
   } catch (err) {
     showError('setupError', err.message);
@@ -456,11 +494,53 @@ $('markProblemBtn').addEventListener('click', () => runExclusive(async () => {
   await applyOutcomeResult(result);
 }));
 
+async function requestLauncherFinish() {
+  const response = await fetch(`${state.serverUrl}/api/runs/${encodeURIComponent(state.runId)}/finish`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ participantId: state.participantId }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || `Could not finish run: ${response.status}`);
+}
+
+$('uploadHfBtn').addEventListener('click', () => runExclusive(async () => {
+  setCompletionStatus('Uploading accepted attempts…');
+  const response = await fetch(`${state.serverUrl}/api/runs/${encodeURIComponent(state.runId)}/hf-upload`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ participantId: state.participantId }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setCompletionStatus(body.error || `Upload failed: ${response.status}`, true);
+    return;
+  }
+  const message = `Uploaded to ${body.sync.repo_id}@${body.sync.revision}. Local evidence was retained.`;
+  await chrome.storage.local.set({
+    _completedRunDecision: { runId: state.runId, choice: 'uploaded', message },
+  });
+  $('hfUploadChoice').classList.add('hidden');
+  setCompletionStatus(message);
+  await requestLauncherFinish();
+}));
+
+$('keepLocalBtn').addEventListener('click', () => runExclusive(async () => {
+  const message = $('uploadHfBtn').disabled && $('uploadHfBtn').textContent === 'Already Uploaded'
+    ? 'Run finished. The Hugging Face copy and local evidence were retained.'
+    : 'Kept locally without a new Hugging Face upload.';
+  await requestLauncherFinish();
+  await chrome.storage.local.set({
+    _completedRunDecision: { runId: state.runId, choice: 'local', message },
+  });
+  $('hfUploadChoice').classList.add('hidden');
+  setCompletionStatus(message);
+}));
+
 $('resetBtn').addEventListener('click', async () => {
   await chrome.storage.local.remove([
     'participantId', 'tasks', 'currentTaskIndex', 'runId', '_tracking', '_sessionId',
     '_originTime', '_viewStart', '_taskTabId', '_runTaskTabId', '_pendingTaskTabId', '_activeSession',
     '_taskWorkflow',
+    '_completedRunDecision',
   ]);
   state = { participantId: '', serverUrl: state.serverUrl, tasks: null, currentTaskIndex: 0, runId: '' };
   showSetup();

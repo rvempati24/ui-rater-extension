@@ -285,6 +285,7 @@ async function main() {
       UI_RATER_WEBSITE_SOURCE_DIR: website.source_dir,
       UI_RATER_WEBSITE_METADATA_FILE: metadataFile,
       UI_RATER_WEBSITE_RUN_ID: website.run_id,
+      UI_RATER_DEFER_SHUTDOWN_FOR_COMPLETION_CHOICE: '1',
       ...(options.keepOpen ? {} : { UI_RATER_SHUTDOWN_FILE: shutdownFile }),
     },
     stdio: 'inherit',
@@ -300,7 +301,7 @@ async function main() {
     try { fs.unlinkSync(shutdownFile); } catch (error) { if (error?.code !== 'ENOENT') console.error(error); }
   };
   if (!options.keepOpen) {
-    console.log('Auto-close: localhost will stop after this run reaches a terminal state.');
+    console.log('Auto-close: localhost will stop after the completed-run upload choice is resolved.');
     shutdownMonitor = setInterval(() => {
       if (!fs.existsSync(shutdownFile)) return;
       clearInterval(shutdownMonitor);
