@@ -133,7 +133,7 @@ If an accepted attempt is invalidated after it has been uploaded, the next synch
 
 One HF commit should synchronize one complete local run:
 
-1. Read the run and attempts in one SQLite snapshot.
+1. Lock and read one closed local run tree, including its immutable attempts.
 2. Validate IDs, statuses, referenced files, counts, and checksums.
 3. Stage the participant/run tree and rebuild affected index rows.
 4. Compare `(attempt_id, checksum)` with the remote index.
@@ -146,15 +146,27 @@ Re-running the exporter is idempotent: an unchanged attempt produces no artifact
 
 | Local entity/artifact | Hugging Face destination |
 | --- | --- |
-| SQLite participant row | `participants/<participant-id>/participant.json` |
-| SQLite run row and frozen config | `participants/<participant-id>/runs/<run-id>/run.json` |
-| SQLite task assignment | `.../tasks/<position>-<assignment-id>/task.json` |
-| SQLite task attempt | `.../attempts/<number>-<attempt-id>/attempt.json` |
-| `data/sessions/<session-id>/manifest.json` | same attempt directory |
+| Local `participant.json` | `participants/<participant-id>/participant.json` |
+| Local `run.json` and frozen config | `participants/<participant-id>/runs/<run-id>/run.json` |
+| Local task directory/`task.json` | `.../tasks/<position>-<assignment-id>/task.json` |
+| Local attempt directory/`attempt.json` | `.../attempts/<number>-<attempt-id>/attempt.json` |
+| Attempt `manifest.json` | same attempt directory |
 | `trace.json`, snapshots, analysis | same attempt directory, preserving subfolders |
 | associated WebM recording | `recording.webm` in the attempt directory |
 
-The uploader resolves paths exclusively from local IDs and database relationships. User-controlled task text, website names, and filesystem paths never become remote path segments.
+The uploader resolves paths exclusively from validated local IDs and parent-child metadata relationships. User-controlled task text, website names, and arbitrary filesystem paths never become remote path segments.
+
+## LLM and coding-agent consumption
+
+The dataset is the reproducible evidence baseline, not a monolithic prompt. [`LLM_AGENT_SANDBOX_V2.md`](LLM_AGENT_SANDBOX_V2.md) defines a materializer that:
+
+1. selects one accepted attempt from `index/attempts.jsonl`;
+2. downloads its participant/run/task/attempt metadata and evidence;
+3. reads exact website provenance from `run.json` and resolves that source revision;
+4. validates IDs and checksums;
+5. builds a bounded sandbox containing `evidence/`, `website/`, an input contract, and a writable `output/` directory.
+
+The same case can feed the compact multimodal API baseline or a read-only OpenCode/Claude Code adapter. Analysis outputs record both the `ux-task-trace` HF commit SHA and the website source commit SHA, then may be synchronized back under `analysis/<analysis-id>/` without altering the original attempt evidence.
 
 ## Configuration
 

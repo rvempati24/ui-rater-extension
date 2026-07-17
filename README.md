@@ -166,7 +166,7 @@ The operator workflow would be:
 3. Mark bad attempts invalid with a reason, restore them if needed, or accept the good attempt. Invalid attempts remain auditable and are excluded from normal exports.
 4. Complete, abort, or archive the run. Use soft deletion by default; hard deletion requires an explicit attempt/session target and confirmation.
 
-The recommended MVP uses SQLite for participant/run/attempt metadata while keeping screenshots, traces, analyses, and WebM files in the existing session directories. A small local admin page/API should support creating runs, retrying tasks, invalidating/restoring attempts, and archiving participants. The full local schema, lifecycle, API sketch, migration steps, and acceptance criteria are in [`docs/PARTICIPANT_MANAGEMENT_V2.md`](docs/PARTICIPANT_MANAGEMENT_V2.md). The corresponding participant-first Hugging Face structure and synchronization rules are in [`docs/HF_PARTICIPANT_DATASET_V2.md`](docs/HF_PARTICIPANT_DATASET_V2.md). These v2 sections are design proposals, not functionality already present in the baseline.
+The recommended MVP uses a participant-first local folder tree for metadata and evidence, with rebuildable JSONL indexes and explicit Hugging Face synchronization. SQLite is deferred until multi-process concurrency or scale requires stronger transactions. A small local admin page/API should support creating runs, retrying tasks, invalidating/restoring attempts, and archiving participants. The full local structure, lifecycle, API sketch, migration steps, and acceptance criteria are in [`docs/PARTICIPANT_MANAGEMENT_V2.md`](docs/PARTICIPANT_MANAGEMENT_V2.md). The corresponding participant-first Hugging Face structure and synchronization rules are in [`docs/HF_PARTICIPANT_DATASET_V2.md`](docs/HF_PARTICIPANT_DATASET_V2.md). The reproducible dataset-to-LLM/coding-agent input contract is in [`docs/LLM_AGENT_SANDBOX_V2.md`](docs/LLM_AGENT_SANDBOX_V2.md). These v2 sections are design proposals, not functionality already present in the baseline.
 
 ## Session output
 
@@ -254,6 +254,20 @@ All model-facing code is isolated in `server/lib/ux-analysis/`:
 - `index.ts`: exposes prepare-only and full-analysis operations.
 
 The HTTP request cannot supply a filesystem path. `UI_RATER_WEBSITE_SOURCE_DIR` must be configured by the server operator, and its final directory name must match the session's `app_id`. For the current pilot, that name is `20260625-090547-allrecipes`.
+
+## Proposed dataset-to-agent analysis
+
+The v2 analysis flow uses `uxBench/ux-task-trace` as a reproducible evidence baseline. It selects one accepted attempt, obtains exact website provenance from its parent `run.json`, downloads or reuses the matching website source revision, validates checksums, and materializes a sandbox:
+
+```text
+case.json
+evidence/   # participant, run, task, attempt, trace, screenshots, optional video
+website/    # exact source revision, read-only
+contract/   # lean instructions and output schema
+output/     # the agent's only writable directory
+```
+
+The same case supports two comparison conditions: the existing compact multimodal API baseline, or a read-only OpenCode/Claude Code-style agent that can search the complete source tree. The agent is not given HF credentials, network access, or permission to edit the website. Every output records the trace-dataset commit and source commit for reproducibility. See [`docs/LLM_AGENT_SANDBOX_V2.md`](docs/LLM_AGENT_SANDBOX_V2.md) for the selection, source-resolution, sandbox, CLI, and validation contracts. The materializer and agent adapters are not implemented yet.
 
 ## Suggested LLM pilot test
 
