@@ -26,7 +26,7 @@
     return `${url.origin}${pathname}${url.search}`;
   }
 
-  function planTaskStart({ currentTab, siteUrl, pendingTaskTabId }) {
+  function planTaskStart({ currentTab, siteUrl, pendingTaskTabId, reusableTaskTabId }) {
     const taskUrl = parseTaskUrl(siteUrl);
     const currentTabId = currentTab?.id;
     const currentUrl = currentTab?.url || '';
@@ -41,6 +41,10 @@
 
     if (Number.isInteger(pendingTaskTabId)) {
       return { action: 'wrong-tab', pendingTaskTabId };
+    }
+
+    if (Number.isInteger(reusableTaskTabId)) {
+      return { action: 'reuse', tabId: reusableTaskTabId, url: taskUrl.href };
     }
 
     const createOptions = { url: taskUrl.href, active: true };

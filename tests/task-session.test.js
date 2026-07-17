@@ -62,6 +62,30 @@ test('opens the task website without recording when the current tab is unrelated
   });
 });
 
+test('reuses the run task tab for the next task instead of opening another tab', () => {
+  const result = planTaskStart({
+    currentTab: { id: 12, url: 'http://localhost:43172/multi-ride', windowId: 7 },
+    siteUrl: 'http://localhost:43172/',
+    reusableTaskTabId: 12,
+  });
+
+  assert.deepEqual(result, {
+    action: 'reuse', tabId: 12, url: 'http://localhost:43172/',
+  });
+});
+
+test('can return to and reuse the run task tab from another active tab', () => {
+  const result = planTaskStart({
+    currentTab: { id: 99, url: 'https://example.com/', windowId: 7 },
+    siteUrl: 'http://localhost:43172/',
+    reusableTaskTabId: 12,
+  });
+
+  assert.deepEqual(result, {
+    action: 'reuse', tabId: 12, url: 'http://localhost:43172/',
+  });
+});
+
 test('never tries to record a Chrome internal page', () => {
   const result = planTaskStart({
     currentTab: { id: 4, url: 'chrome://newtab/', windowId: 8 },

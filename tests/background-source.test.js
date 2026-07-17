@@ -29,6 +29,14 @@ test('background creates and propagates stable run assignment and attempt IDs', 
   assert.doesNotMatch(source, /CLEAR_INTERACTIONS/);
 });
 
+test('background reuses one website tab across tasks in a run', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+
+  assert.match(source, /_runTaskTabId/);
+  assert.match(source, /reusePendingTask/);
+  assert.match(source, /chrome\.tabs\.update\(tabId, \{ url, active: true \}\)/);
+});
+
 test('offscreen recorder keeps a failed upload available for retry', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'offscreen.js'), 'utf8');
 

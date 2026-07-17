@@ -95,6 +95,12 @@ async function openPendingTask(createOptions) {
   return { status: 'pending', tabId: taskTab.id };
 }
 
+async function reusePendingTask(tabId, url) {
+  await chrome.tabs.update(tabId, { url, active: true });
+  await chrome.storage.local.set({ _pendingTaskTabId: tabId });
+  return { status: 'pending', tabId };
+}
+
 async function createSession() {
   const data = await chrome.storage.local.get([
     'participantId', 'serverUrl', 'runId', 'tasks', 'currentTaskIndex', WORKFLOW_KEY,
@@ -125,7 +131,7 @@ async function createSession() {
 
 async function startTaskFlow(msg) {
   const stored = await chrome.storage.local.get([
-    '_pendingTaskTabId', ACTIVE_SESSION_KEY, WORKFLOW_KEY,
+    '_pendingTaskTabId', '_runTaskTabId', ACTIVE_SESSION_KEY, WORKFLOW_KEY,
   ]);
   const existingPhase = stored[WORKFLOW_KEY]?.phase;
   if (stored[ACTIVE_SESSION_KEY]
@@ -137,9 +143,22 @@ async function startTaskFlow(msg) {
     currentTab: msg.currentTab,
     siteUrl: msg.siteUrl,
     pendingTaskTabId: stored._pendingTaskTabId,
+    reusableTaskTabId: stored._runTaskTabId,
   });
 
   if (plan.action === 'open') return openPendingTask(plan.createOptions);
+  if (plan.action === 'reuse') {
+    try {
+      return await reusePendingTask(plan.tabId, plan.url);
+    } catch {
+      await chrome.storage.local.remove(['_runTaskTabId']);
+      const retryPlan = UiRaterTaskSession.planTaskStart({
+        currentTab: msg.currentTab,
+        siteUrl: msg.siteUrl,
+      });
+      return openPendingTask(retryPlan.createOptions);
+    }
+  }
   if (plan.action === 'wrong-tab') {
     try {
       await chrome.tabs.update(plan.pendingTaskTabId, { active: true });
@@ -169,6 +188,7 @@ async function startTaskFlow(msg) {
         _originTime: originTime,
         _viewStart: viewStart,
         _taskTabId: taskTabId,
+        _runTaskTabId: taskTabId,
         [ACTIVE_SESSION_KEY]: {
           sessionId,
           originTime,
@@ -533,6 +553,9 @@ async function submitAttemptOutcome(outcome, reason) {
     WORKFLOW_KEY, ACTIVE_SESSION_KEY, '_tracking', '_sessionId', '_originTime',
     '_viewStart', '_taskTabId',
   ]);
+  if (body.runCompleted || nextIndex >= tasks.length) {
+    await chrome.storage.local.remove(['_runTaskTabId', '_pendingTaskTabId']);
+  }
   return {
     ok: true,
     outcome,

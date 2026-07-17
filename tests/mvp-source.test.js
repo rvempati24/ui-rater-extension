@@ -151,3 +151,14 @@ test('task launcher auto-closes only after the run-completion marker is written'
   assert.match(launcher, /spawnSync\('taskkill', \['\/PID'.*'\/T', '\/F'\]/);
   assert.match(outcomeService, /if \(result\.runCompleted\) await requestLauncherShutdown/);
 });
+
+test('task launcher serves the synthetic SPA on a separate origin', () => {
+  const launcher = fs.readFileSync(path.join(
+    root, 'server', 'scripts', 'start-with-tasks.mjs'
+  ), 'utf8');
+  assert.match(launcher, /--website-port/);
+  assert.match(launcher, /startWebsiteServer/);
+  assert.match(launcher, /const websiteUrl = `http:\/\/localhost:\$\{websitePort\}\//);
+  assert.match(launcher, /site_url: websiteUrl/);
+  assert.match(launcher, /websiteServer\.close\(\)/);
+});

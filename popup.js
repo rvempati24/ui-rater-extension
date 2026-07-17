@@ -112,7 +112,7 @@ async function showTask() {
   $('taskSite').textContent = task.site_url ? `→ ${task.site_url}` : '';
 
   const data = await chrome.storage.local.get([
-    '_tracking', '_pendingTaskTabId', '_activeSession', '_taskWorkflow',
+    '_tracking', '_pendingTaskTabId', '_runTaskTabId', '_activeSession', '_taskWorkflow',
   ]);
   const view = UiRaterTaskSession.resolveTaskView({
     workflow: data._taskWorkflow,
@@ -134,18 +134,21 @@ async function showTask() {
     if (data._taskWorkflow?.lastError) showError('taskError', data._taskWorkflow.lastError);
   } else {
     showPreTrack();
-    await updateBeginTaskButton(task, data._pendingTaskTabId);
+    await updateBeginTaskButton(task, data._pendingTaskTabId, data._runTaskTabId);
   }
 }
 
-async function updateBeginTaskButton(task, pendingTaskTabId) {
+async function updateBeginTaskButton(task, pendingTaskTabId, reusableTaskTabId) {
   const button = $('beginTaskBtn');
   try {
     const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const plan = UiRaterTaskSession.planTaskStart({ currentTab, siteUrl: task.site_url, pendingTaskTabId });
+    const plan = UiRaterTaskSession.planTaskStart({
+      currentTab, siteUrl: task.site_url, pendingTaskTabId, reusableTaskTabId,
+    });
     button.textContent = plan.action === 'record'
       ? 'Start Recording'
-      : plan.action === 'wrong-tab' ? 'Return to Task Tab' : 'Open Task Website';
+      : plan.action === 'wrong-tab' ? 'Return to Task Tab'
+        : plan.action === 'reuse' ? 'Open Next Task in Current Tab' : 'Open Task Website';
   } catch {
     button.textContent = 'Begin Task';
   }
@@ -312,8 +315,8 @@ $('beginTaskBtn').addEventListener('click', () => runExclusive(async () => {
     showError('taskError', err.message);
   } finally {
     $('beginTaskBtn').disabled = false;
-    const pending = await chrome.storage.local.get(['_pendingTaskTabId']);
-    await updateBeginTaskButton(task, pending._pendingTaskTabId);
+    const pending = await chrome.storage.local.get(['_pendingTaskTabId', '_runTaskTabId']);
+    await updateBeginTaskButton(task, pending._pendingTaskTabId, pending._runTaskTabId);
   }
 }));
 
@@ -456,7 +459,7 @@ $('markProblemBtn').addEventListener('click', () => runExclusive(async () => {
 $('resetBtn').addEventListener('click', async () => {
   await chrome.storage.local.remove([
     'participantId', 'tasks', 'currentTaskIndex', 'runId', '_tracking', '_sessionId',
-    '_originTime', '_viewStart', '_taskTabId', '_pendingTaskTabId', '_activeSession',
+    '_originTime', '_viewStart', '_taskTabId', '_runTaskTabId', '_pendingTaskTabId', '_activeSession',
     '_taskWorkflow',
   ]);
   state = { participantId: '', serverUrl: state.serverUrl, tasks: null, currentTaskIndex: 0, runId: '' };

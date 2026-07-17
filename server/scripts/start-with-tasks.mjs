@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import {
   loadMind2WebPrompts,
@@ -23,6 +24,7 @@ function usage() {
     `  --hf-site <name>          Restrict random remote selection by website\n` +
     `  --hf-revision <revision>  Dataset revision (default: prompt-userflow-regen-20260624)\n` +
     `  --website-cache <folder>  Download cache (default: .website-cache)\n` +
+    `  --website-port <port>     Synthetic website port (default: 4173)\n` +
     `  --all                     Run all available tasks (default)\n` +
     `  --random [n]              Randomly run one task, or n tasks\n` +
     `  --tasks <1 3 5|1,3,5>     Run specified 1-based source task numbers\n` +
@@ -56,6 +58,7 @@ export function parseArgs(args) {
     else if (arg === '--hf-site') options.hfSite = takeValue(args, index++, arg);
     else if (arg === '--hf-revision') options.hfRevision = takeValue(args, index++, arg);
     else if (arg === '--website-cache') options.websiteCache = takeValue(args, index++, arg);
+    else if (arg === '--website-port') options.websitePort = Number(takeValue(args, index++, arg));
     else if (arg === '--mind2web-tasks') options.mind2webFile = takeValue(args, index++, arg);
     else if (arg === '--seed') options.seed = takeValue(args, index++, arg);
     else if (arg === '--random') {
@@ -80,7 +83,54 @@ export function parseArgs(args) {
   if (options.taskFile && hasHfSelector) {
     throw new Error('--tasks-json cannot be combined with Hugging Face website selectors.');
   }
+  if (options.websitePort != null && (!Number.isInteger(options.websitePort) || options.websitePort < 1 || options.websitePort > 65535)) {
+    throw new Error('--website-port must be an integer from 1 to 65535.');
+  }
   return options;
+}
+
+const CONTENT_TYPES = new Map([
+  ['.css', 'text/css; charset=utf-8'],
+  ['.html', 'text/html; charset=utf-8'],
+  ['.js', 'text/javascript; charset=utf-8'],
+  ['.json', 'application/json; charset=utf-8'],
+  ['.svg', 'image/svg+xml'],
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.webp', 'image/webp'],
+  ['.woff', 'font/woff'],
+  ['.woff2', 'font/woff2'],
+]);
+
+async function startWebsiteServer(distDir, port) {
+  const root = path.resolve(distDir);
+  const indexFile = path.join(root, 'index.html');
+  const server = createServer(async (request, response) => {
+    try {
+      const pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://localhost').pathname);
+      const relative = pathname.replace(/^\/+/, '');
+      let target = path.resolve(root, relative || 'index.html');
+      if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+        response.writeHead(400).end('Invalid path');
+        return;
+      }
+      const stat = await fsp.stat(target).catch(() => undefined);
+      if (!stat?.isFile()) target = indexFile;
+      response.writeHead(200, {
+        'Content-Type': CONTENT_TYPES.get(path.extname(target).toLowerCase()) ?? 'application/octet-stream',
+        'Cache-Control': 'no-store',
+      });
+      fs.createReadStream(target).pipe(response);
+    } catch (error) {
+      response.writeHead(500).end(error instanceof Error ? error.message : 'Website server error');
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolve);
+  });
+  return server;
 }
 
 function runPython(args) {
@@ -211,12 +261,19 @@ async function main() {
   selected.tasks.forEach((task, index) => console.log(`  ${index + 1}. [source ${selected.sourceIndices[index]}] ${task.task_prompt ?? task.slug ?? 'untitled'}`));
   if (options.dryRun) return;
 
+  const websitePort = options.websitePort ?? 4173;
+  const websiteUrl = `http://localhost:${websitePort}/`;
+  const runtimeTasks = selected.tasks.map((task) => ({ ...task, site_url: websiteUrl }));
+  const websiteServer = await startWebsiteServer(path.join(website.source_dir, 'dist'), websitePort);
+  website.runtime_url = websiteUrl;
+  console.log(`Website runtime: ${websiteUrl}`);
+
   const runtimeDir = path.join(serverDir, '.runtime');
   await fsp.mkdir(runtimeDir, { recursive: true });
   const runtimeFile = path.join(runtimeDir, `trials-config-${process.pid}.json`);
   const metadataFile = path.join(runtimeDir, `website-metadata-${process.pid}.json`);
   const shutdownFile = path.join(runtimeDir, `shutdown-${process.pid}.json`);
-  await fsp.writeFile(runtimeFile, `${JSON.stringify(selected.tasks, null, 2)}\n`, 'utf8');
+  await fsp.writeFile(runtimeFile, `${JSON.stringify(runtimeTasks, null, 2)}\n`, 'utf8');
   await fsp.writeFile(metadataFile, `${JSON.stringify(website, null, 2)}\n`, 'utf8');
 
   const nextBin = path.join(serverDir, 'node_modules', 'next', 'dist', 'bin', 'next');
@@ -237,6 +294,7 @@ async function main() {
   let autoShutdown = false;
   const cleanup = () => {
     if (shutdownMonitor) clearInterval(shutdownMonitor);
+    websiteServer.close();
     try { fs.unlinkSync(runtimeFile); } catch (error) { if (error?.code !== 'ENOENT') console.error(error); }
     try { fs.unlinkSync(metadataFile); } catch (error) { if (error?.code !== 'ENOENT') console.error(error); }
     try { fs.unlinkSync(shutdownFile); } catch (error) { if (error?.code !== 'ENOENT') console.error(error); }

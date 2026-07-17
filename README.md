@@ -88,9 +88,11 @@ npm run dev:tasks -- `
   --tasks 1 3 5
 ```
 
-The terminal should report `Selected 3/... tasks` and listen on `http://localhost:3000`. If Next.js switches to port 3001 or reports a `.next` lock, stop the older server before testing; otherwise the extension may still talk to an earlier one-task configuration.
+The terminal should report `Selected 3/... tasks`, the task API on `http://localhost:3000`, and the synthetic website on `http://localhost:4173`. Keeping the website on a separate origin lets Vite assets and client-side routes such as `/deals` work without colliding with Next.js. Use `--website-port <port>` if 4173 is occupied. If Next.js switches to port 3001 or reports a `.next` lock, stop the older server before testing; otherwise the extension may still talk to an earlier task configuration.
 
 By default, `dev:tasks` stops localhost about one second after every selected task in the participant run reaches `completed`, `skipped`, or `failed_no_retry`. This happens after the final outcome and compatibility metadata are saved. Add `--keep-open` when testing multiple participants against the same selected task configuration.
+
+Within one run, the extension reuses the same website tab for every task. Starting the next task navigates that tab back to the configured website URL; a new tab is created only when the previous task tab was closed or is no longer available.
 
 Use a valid participant ID that has not requested tasks from this server data directory. Before opening the extension, verify the server-side assignment:
 
