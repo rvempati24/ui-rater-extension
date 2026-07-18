@@ -38,6 +38,7 @@ function showSetup() {
   $('feedbackScreen').classList.add('hidden');
   $('doneScreen').classList.add('hidden');
   $('statusDot').classList.add('inactive');
+  $('headerResetBtn').classList.add('hidden');
 }
 
 function showTask() {
@@ -45,6 +46,7 @@ function showTask() {
   $('taskScreen').classList.remove('hidden');
   $('feedbackScreen').classList.add('hidden');
   $('doneScreen').classList.add('hidden');
+  $('headerResetBtn').classList.remove('hidden');
   $('statusDot').classList.remove('inactive');
 
   const task = state.tasks[state.currentTaskIndex];
@@ -80,6 +82,7 @@ function showFeedback() {
   $('taskScreen').classList.add('hidden');
   $('feedbackScreen').classList.remove('hidden');
   $('doneScreen').classList.add('hidden');
+  $('headerResetBtn').classList.remove('hidden');
   $('feedbackInput').value = '';
   $('feedbackProgress').textContent =
     `Task ${state.currentTaskIndex + 1} of ${state.tasks.length} — completed`;
@@ -91,6 +94,7 @@ function showDone() {
   $('feedbackScreen').classList.add('hidden');
   $('doneScreen').classList.remove('hidden');
   $('statusDot').classList.add('inactive');
+  $('headerResetBtn').classList.remove('hidden');
 }
 
 function showError(containerId, msg) {
@@ -299,8 +303,8 @@ $('skipBtn').addEventListener('click', async () => {
   }
 });
 
-// Reset
-$('resetBtn').addEventListener('click', async () => {
+// Reset (shared logic for both reset buttons)
+async function resetStudy() {
   await chrome.storage.local.remove([
     'participantId', 'tasks', 'currentTaskIndex',
     '_tracking', '_originTime', '_viewStart', '_durationMs', '_snapshotInteractions',
@@ -308,6 +312,14 @@ $('resetBtn').addEventListener('click', async () => {
   chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
   state = { participantId: '', serverUrl: state.serverUrl, tasks: null, currentTaskIndex: 0 };
   showSetup();
+}
+
+$('resetBtn').addEventListener('click', resetStudy);
+
+$('headerResetBtn').addEventListener('click', async () => {
+  if (confirm('Reset the study? This will return you to the setup screen.')) {
+    resetStudy();
+  }
 });
 
 init();
