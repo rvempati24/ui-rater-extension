@@ -215,9 +215,9 @@ $('doneBtn').addEventListener('click', async () => {
     await new Promise(r => setTimeout(r, 300));
 
     // Snapshot timing now (before user spends time on feedback)
-    const stored = await chrome.storage.local.get(['_originTime', '_viewStart']);
-    const durationMs = Date.now() - (stored._originTime || Date.now());
+    const stored = await chrome.storage.local.get(['_viewStart']);
     const viewStart = stored._viewStart || new Date().toISOString();
+    const durationMs = Date.now() - new Date(viewStart).getTime();
     await chrome.storage.local.set({ _durationMs: durationMs, _viewStart: viewStart });
 
     // Snapshot interactions and stop recording now, before feedback screen
