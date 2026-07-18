@@ -91,22 +91,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'SNAPSHOT_AND_STOP_RECORDING') {
+    (async () => {
+      try {
+        // Save interactions to storage so they survive service worker restart
+        await chrome.storage.local.set({ _snapshotInteractions: [...collectedInteractions] });
+        collectedInteractions = [];
+
+        // Stop recording and upload video now
+        const data = await chrome.storage.local.get(['serverUrl', 'participantId', 'currentTaskIndex']);
+        const serverUrl = data.serverUrl || DEFAULT_SERVER;
+        const taskIndex = (data.currentTaskIndex || 0) + 1;
+        await stopRecording(serverUrl, data.participantId, taskIndex);
+
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
   if (msg.type === 'COMPLETE_TASK') {
-    chrome.storage.local.get(['participantId', 'serverUrl', 'currentTaskIndex', 'tasks'], async (data) => {
+    chrome.storage.local.get(['participantId', 'serverUrl', 'currentTaskIndex', 'tasks', '_snapshotInteractions'], async (data) => {
       if (!data.participantId || !data.tasks) {
         sendResponse({ ok: false, error: 'Not configured' });
         return;
       }
       const serverUrl = data.serverUrl || DEFAULT_SERVER;
-      const allInteractions = [...collectedInteractions];
+      const allInteractions = data._snapshotInteractions || [...collectedInteractions];
       const viewStart = msg.viewStart;
       const durationMs = msg.durationMs || 0;
       const feedback = msg.feedback || '';
       const taskIndex = (data.currentTaskIndex || 0) + 1;
       const participantId = data.participantId;
-
-      // Stop recording and upload video to server
-      await stopRecording(serverUrl, participantId, taskIndex);
 
       try {
         const res = await fetch(`${serverUrl}/api/complete-task`, {
@@ -124,6 +142,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!res.ok) throw new Error(`Server error: ${res.status}`);
 
         collectedInteractions = [];
+        await chrome.storage.local.remove(['_snapshotInteractions']);
 
         const nextIndex = taskIndex;
         if (nextIndex < data.tasks.length) {

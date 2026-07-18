@@ -192,7 +192,7 @@ $('beginTaskBtn').addEventListener('click', async () => {
   showDuringTrack();
 });
 
-// Done — stop tracking and show feedback screen
+// Done — stop tracking, snapshot interactions, stop recording, then show feedback
 $('doneBtn').addEventListener('click', async () => {
   $('doneBtn').disabled = true;
   $('doneBtn').textContent = 'Stopping…';
@@ -210,7 +210,18 @@ $('doneBtn').addEventListener('click', async () => {
     // Small delay to let the flush arrive at background
     await new Promise(r => setTimeout(r, 300));
 
-    // Show feedback screen before submitting
+    // Snapshot timing now (before user spends time on feedback)
+    const stored = await chrome.storage.local.get(['_originTime', '_viewStart']);
+    const durationMs = Date.now() - (stored._originTime || Date.now());
+    const viewStart = stored._viewStart || new Date().toISOString();
+    await chrome.storage.local.set({ _durationMs: durationMs, _viewStart: viewStart });
+
+    // Snapshot interactions and stop recording now, before feedback screen
+    await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: 'SNAPSHOT_AND_STOP_RECORDING' }, resolve);
+    });
+
+    // Show feedback screen
     showFeedback();
   } catch (err) {
     showError('taskError', err.message);
@@ -227,15 +238,13 @@ async function submitTaskWithFeedback(feedback) {
   $('submitFeedbackBtn').textContent = 'Saving…';
 
   try {
-    const stored = await chrome.storage.local.get(['_originTime', '_viewStart']);
-    const durationMs = Date.now() - (stored._originTime || Date.now());
-    const viewStart = stored._viewStart || new Date().toISOString();
+    const stored = await chrome.storage.local.get(['_durationMs', '_viewStart']);
 
     const result = await new Promise((resolve) => {
       chrome.runtime.sendMessage({
         type: 'COMPLETE_TASK',
-        viewStart,
-        durationMs,
+        viewStart: stored._viewStart,
+        durationMs: stored._durationMs,
         feedback: feedback || '',
       }, resolve);
     });
@@ -244,7 +253,7 @@ async function submitTaskWithFeedback(feedback) {
       throw new Error(result?.error || 'Failed to save.');
     }
 
-    await chrome.storage.local.remove(['_tracking', '_originTime', '_viewStart']);
+    await chrome.storage.local.remove(['_tracking', '_originTime', '_viewStart', '_durationMs']);
 
     state.currentTaskIndex++;
     if (result.finished) {
@@ -278,7 +287,7 @@ $('skipBtn').addEventListener('click', async () => {
   } catch { /* ignore */ }
   chrome.runtime.sendMessage({ type: 'SKIP_TASK' });
   chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
-  await chrome.storage.local.remove(['_tracking', '_originTime', '_viewStart']);
+  await chrome.storage.local.remove(['_tracking', '_originTime', '_viewStart', '_durationMs', '_snapshotInteractions']);
 
   state.currentTaskIndex++;
   await chrome.storage.local.set({ currentTaskIndex: state.currentTaskIndex });
@@ -294,7 +303,7 @@ $('skipBtn').addEventListener('click', async () => {
 $('resetBtn').addEventListener('click', async () => {
   await chrome.storage.local.remove([
     'participantId', 'tasks', 'currentTaskIndex',
-    '_tracking', '_originTime', '_viewStart',
+    '_tracking', '_originTime', '_viewStart', '_durationMs', '_snapshotInteractions',
   ]);
   chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
   state = { participantId: '', serverUrl: state.serverUrl, tasks: null, currentTaskIndex: 0 };
