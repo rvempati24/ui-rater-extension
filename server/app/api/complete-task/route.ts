@@ -27,8 +27,10 @@ export async function POST(req: NextRequest) {
       if (view_start && !trial.view_start) {
         trial.view_start = view_start;
       }
-      if (typeof duration_ms === 'number' && duration_ms >= 0) {
+      if (typeof duration_ms === 'number' && duration_ms > 0) {
         trial.duration_ms = duration_ms;
+      } else if (trial.view_start) {
+        trial.duration_ms = Date.now() - new Date(trial.view_start).getTime();
       }
       if (Array.isArray(interactions)) {
         trial.interactions = interactions as InteractionEvent[];
