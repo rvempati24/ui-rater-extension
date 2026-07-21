@@ -62,6 +62,8 @@ The resolved source is checked against recorded metadata/checksums when availabl
 ```text
 <sandbox>/
   case.json
+  analysis-case.json
+  evidence-manifest.json
   evidence/
     participant.json
     run.json
@@ -76,7 +78,7 @@ The resolved source is checked against recorded metadata/checksums when availabl
   contract/
     instructions.md
     finding.schema.json
-  output/
+  output/runs/<analysis-run-id>/
     evidence-only/
       findings.json
       run-metadata.json
@@ -118,7 +120,8 @@ Video can be omitted with `--no-video` for agents that cannot inspect it or when
     "recording": "evidence/recording.webm"
   },
   "source_root": "website",
-  "output_schema": "contract/finding.schema.json"
+  "output_schema": "contract/finding.schema.json",
+  "evidence_manifest": "evidence-manifest.json"
 }
 ```
 
@@ -129,7 +132,7 @@ Paths are sandbox-relative. Prompts do not contain host filesystem paths.
 The agent instruction should stay short:
 
 1. Identify usability problems supported by the supplied attempt evidence.
-2. Separate observed behavior from inference.
+2. Describe the observed UX problem and its task impact.
 3. Cite existing event sequence numbers and snapshot IDs.
 4. Explain how each observed problem impeded the specific task.
 5. Do not perform a generic heuristic audit or propose code/implementation changes.
@@ -139,7 +142,7 @@ Allowed tools are filesystem read, filename/text search, and optional non-mutati
 
 ## Output linkage
 
-Each condition's `output/<condition>/run-metadata.json` records:
+Each condition's immutable `output/runs/<analysis-run-id>/<condition>/run-metadata.json` records:
 
 - Codex harness and version;
 - model name;

@@ -4,9 +4,11 @@ This folder is the complete LLM boundary for the UI Rater baseline.
 
 - `input.ts` prepares the trace, screenshot metadata, and inspectable `analysis/input.json`.
 - `source-context.ts` reads a server-configured website source root with path and size limits.
-- `prompt.ts` owns the lean source-aware prompt and structured-output schema.
+- `prompt.ts` owns the task-specific, problem-only prompt and structured-output schema.
 - `openai.ts` is the only file that makes the model request.
-- `validate.ts` rejects unknown event, snapshot, and source references.
+- `validate.ts` rejects unknown event and snapshot references.
+
+The canonical finding contract describes observed UX problems and task impact only. It does not ask the model for recommendations, code changes, or source-file candidates.
 - `report.ts` renders the human-readable report.
 - `index.ts` orchestrates preparation and analysis for the API route.
 

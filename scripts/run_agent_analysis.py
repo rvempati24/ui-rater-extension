@@ -13,6 +13,11 @@ import shutil
 import subprocess
 import tempfile
 
+try:
+    from scripts.ux_evidence import load_evidence_manifest, new_analysis_run_id, sha256_file, update_latest
+except ModuleNotFoundError:
+    from ux_evidence import load_evidence_manifest, new_analysis_run_id, sha256_file, update_latest
+
 
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_REASONING_EFFORT = "medium"
@@ -36,9 +41,8 @@ def select_snapshot_paths(
     case_dir: Path, case: dict, max_screenshots: int | None = None
 ) -> list[Path]:
     """Return all screenshots, or a deterministic sample spanning the attempt."""
-    screenshots = [
-        (case_dir / path).resolve() for path in case["evidence"].get("snapshots", [])
-    ]
+    manifest = load_evidence_manifest(case_dir, case)
+    screenshots = [(case_dir / item["image"]["path"]).resolve() for item in manifest["snapshots"]]
     missing = [path for path in screenshots if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"Case screenshot is missing: {missing[0]}")
@@ -85,6 +89,7 @@ def evidence_workspace(
     workspace = destination / workspace_name
     workspace.mkdir(parents=True)
     trace, _ = load_trace(case_dir, case)
+    evidence_manifest = load_evidence_manifest(case_dir, case)
     selected_snapshots = (
         snapshot_paths
         if snapshot_paths is not None
@@ -95,17 +100,37 @@ def evidence_workspace(
         snapshot_dir.mkdir()
         for snapshot in selected_snapshots:
             shutil.copy2(snapshot, snapshot_dir / snapshot.name)
-    compact_case = {
-        "schema_version": case.get("schema_version"),
-        "attempt_id": case.get("attempt_id"),
-        "attempt_status": case.get("attempt_status"),
-        "outcome": case.get("outcome"),
-        "task": case.get("task"),
-        "trace_file": "trace.json",
-        "available_snapshot_ids": [
-            path.stem for path in selected_snapshots
+            metadata = snapshot.with_suffix(".json")
+            shutil.copy2(metadata, snapshot_dir / metadata.name)
+    selected_ids = {path.stem for path in selected_snapshots}
+    workspace_manifest = {
+        **evidence_manifest,
+        "case": {**evidence_manifest["case"], "path": "case.json"},
+        "trace": {**evidence_manifest["trace"], "path": "trace.json"},
+        "snapshots": [
+            {
+                **item,
+                "image": {**item["image"], "path": f"screenshots/{Path(item['image']['path']).name}"},
+                "metadata": {
+                    **item["metadata"],
+                    "path": f"screenshots/{Path(item['metadata']['path']).name}",
+                },
+            }
+            for item in evidence_manifest["snapshots"]
+            if item["snapshot_id"] in selected_ids
         ],
     }
+    (workspace / "evidence-manifest.json").write_text(
+        json.dumps(workspace_manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    compact_case = json.loads(
+        (case_dir / case["analysis_case"]).read_text(encoding="utf-8")
+    )
+    compact_case.update({
+        "trace_file": "trace.json",
+        "evidence_manifest": "evidence-manifest.json",
+        "available_snapshot_ids": [path.stem for path in selected_snapshots],
+    })
     (workspace / "case.json").write_text(
         json.dumps(compact_case, indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -211,8 +236,10 @@ def run_condition(
     max_screenshots: int | None,
     timeout: int,
     temp_root: Path,
+    run_root: Path | None = None,
+    analysis_run_id: str | None = None,
 ) -> dict:
-    output_dir = case_dir / "output" / condition
+    output_dir = run_root / condition if run_root else case_dir / "output" / condition
     output_dir.mkdir(parents=True, exist_ok=True)
     findings_file = output_dir / "findings.json"
     metadata_file = output_dir / "run-metadata.json"
@@ -267,6 +294,7 @@ def run_condition(
             error = f"Output validation failed: {validation_error}"
     metadata = {
         "schema_version": 2, "harness": "codex", "harness_version": harness_version,
+        "analysis_run_id": analysis_run_id,
         "condition": condition,
         "model": model or "codex-default", "authentication": "existing-codex-login",
         "reasoning_effort": reasoning_effort,
@@ -284,6 +312,11 @@ def run_condition(
         "exit_code": result.returncode, "error": error,
         "stdout_tail": result.stdout[-4000:], "stderr_tail": result.stderr[-4000:],
         "input_digests": before,
+        "evidence_manifest_sha256": sha256_file(
+            case_dir / case.get("evidence_manifest", "evidence-manifest.json")
+        ),
+        "schema_sha256": sha256_file(case_dir / case["output_schema"]),
+        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
     }
     metadata_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return {"condition": condition, "ok": error is None, "output": str(findings_file), "error": error}
@@ -321,23 +354,29 @@ def main() -> int:
     case = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
     harness_version = codex_version(args.codex_command)
     conditions = ["evidence-only", "source-explore"] if args.condition == "both" else [args.condition]
+    analysis_run_id = new_analysis_run_id()
+    run_root = case_dir / "output" / "runs" / analysis_run_id
     with tempfile.TemporaryDirectory(prefix="ui-rater-analysis-") as temp:
         results = [
             run_condition(
                 case_dir, case, condition, args.codex_command, harness_version, args.model,
                 args.reasoning_effort, args.max_screenshots, args.timeout, Path(temp),
+                run_root, analysis_run_id,
             )
             for condition in conditions
         ]
     summary = {
         "schema_version": 1, "harness": "codex", "harness_version": harness_version,
+        "analysis_run_id": analysis_run_id,
         "attempt_id": case.get("attempt_id"),
         "model": args.model or "codex-default",
         "reasoning_effort": args.reasoning_effort, "results": results,
     }
-    (case_dir / "output" / "comparison.json").write_text(
+    run_root.mkdir(parents=True, exist_ok=True)
+    (run_root / "comparison.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"
     )
+    update_latest(case_dir / "output", "codex", analysis_run_id)
     print(json.dumps(summary))
     return 0 if all(result["ok"] for result in results) else 1
 

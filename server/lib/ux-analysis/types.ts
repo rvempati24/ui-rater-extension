@@ -34,20 +34,14 @@ export interface AnalysisInput {
   website_provenance?: Record<string, unknown>;
 }
 
-export interface SourceCandidate {
-  path: string;
-  rationale: string;
-}
-
 export interface UXFinding {
   title: string;
+  ux_problem: string;
   observation: string;
-  inference: string;
-  recommendation: string;
-  severity: 1 | 2 | 3 | 4;
-  confidence: number;
+  task_impact: string;
+  severity: 'low' | 'medium' | 'high';
+  confidence: 'low' | 'medium' | 'high';
   evidence: { event_seq: number[]; snapshot_ids: string[] };
-  source_candidates: SourceCandidate[];
 }
 
 export interface AnalysisResult {

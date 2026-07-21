@@ -1,6 +1,6 @@
 # UI Rater Extension - UX Analysis Baseline
 
-This Chrome extension records interaction traces, tab video, and a small set of key screenshots while a user completes a task on a synthetic website. The local Next.js server stores one directory per task and can send the trace plus screenshots to an LLM for UX improvement suggestions.
+This Chrome extension records interaction traces, tab video, and action-linked screenshots while a user completes a task on a synthetic website. Important activations, edits, submissions, and navigations are captured before and after when the browser permits it; settled scroll states and task boundaries are also captured. The local Next.js server stores one directory per task and can send the trace plus screenshots to an LLM for task-specific UX problem identification.
 
 ## Baseline scope
 
@@ -8,7 +8,7 @@ The current version includes:
 
 - durable task traces backed by `chrome.storage.local`;
 - one immutable `data/sessions/<session-id>/` directory per recording attempt;
-- key screenshots at start, click/change/submit/navigation, and task end;
+- before/after screenshots for important actions, plus task boundaries and settled scroll states;
 - one-pass multimodal UX analysis with evidence IDs;
 - optional bounded website source context and ranked source-file candidates;
 - optional local export and optional upload to [`uxBench/ux-task-trace`](https://huggingface.co/datasets/uxBench/ux-task-trace).
@@ -426,7 +426,7 @@ POST /api/sessions/<session-id>/analyze?prepareOnly=1
 
 If `OPENAI_API_KEY` is missing, the endpoint makes no model request. It still writes `analysis/input.json`, which is useful for inspecting exactly what would be sent. `gpt-5.6-terra` is the default model; `OPENAI_MODEL` can override it.
 
-The prompt is deliberately short: report only usability problems supported by supplied evidence, separate observation from inference, cite existing event/snapshot IDs, and return the fixed JSON schema. When source is configured, each finding may also return source-file candidates, but only from paths actually included in `input.json`.
+The prompt is deliberately short: report only task-specific usability problems supported by supplied evidence, cite existing event/snapshot IDs, explain task impact, and return the fixed problem-only JSON schema. It does not ask for recommendations, code changes, or source-file candidates.
 
 ## Isolated LLM analysis module
 
@@ -436,7 +436,7 @@ All model-facing code is isolated in `server/lib/ux-analysis/`:
 - `source-context.ts`: reads a server-configured source root with extension, directory, file-count, and character limits;
 - `prompt.ts`: owns the lean prompt and JSON schema;
 - `openai.ts`: the only module allowed to call the OpenAI API;
-- `validate.ts`: rejects unknown event, screenshot, and source references;
+- `validate.ts`: rejects unknown event and screenshot references;
 - `report.ts`: renders `report.md`;
 - `index.ts`: exposes prepare-only and full-analysis operations.
 
@@ -452,13 +452,15 @@ The v2 analysis flow uses `uxBench/ux-task-trace` as a reproducible evidence bas
 
 ```text
 case.json
+analysis-case.json       # canonical task/outcome context shared by analysis methods
+evidence-manifest.json # ordered trace/screenshot catalog with hashes
 evidence/   # participant, run, task, attempt, trace, screenshots, optional video
 website/    # application source from exact revision, read-only; agent configs excluded
 contract/   # lean instructions and output schema
 output/     # the agent's only writable directory
 ```
 
-The same case supports two controlled Codex conditions plus a direct one-shot ablation. The pinned defaults are `gpt-5.6-sol` with `medium` reasoning effort. `evidence-only` receives trace JSON plus all captured screenshots in a temporary workspace that contains no website source. `source-explore` receives the same inputs and may additionally search a clean, read-only copy of the application source tree; prior analysis outputs are excluded. `direct-one-shot` sends every case/evidence JSON document and every screenshot in one multimodal Responses request through the local CLIProxyAPI, without source, tools, or a multi-turn agent loop. All conditions report only evidence-grounded UX problems for the specific task; none proposes code changes. See [`docs/UX_ANALYSIS_HARNESS.md`](docs/UX_ANALYSIS_HARNESS.md) for the harness decision and comparison design.
+The same case supports two controlled Codex conditions plus a direct one-shot ablation. The pinned defaults are `gpt-5.6-sol` with `medium` reasoning effort. `evidence-only` receives the canonical analysis case, complete trace, screenshot catalog/metadata, and all captured screenshots in a temporary workspace that contains no website source. `source-explore` receives the same inputs and may additionally search a clean, read-only copy of the application source tree; prior analysis outputs are excluded. `direct-one-shot` sends that same canonical evidence set and every screenshot in one multimodal Responses request through the local CLIProxyAPI, without source, tools, or a multi-turn agent loop. All conditions report only evidence-grounded UX problems for the specific task; none proposes code changes. See [`docs/UX_ANALYSIS_HARNESS.md`](docs/UX_ANALYSIS_HARNESS.md) for the harness decision and comparison design.
 
 Materialize a local accepted attempt on Windows:
 
@@ -503,7 +505,7 @@ Run the trace-only ablation with the same model and reasoning effort:
 sh scripts/run-direct-analysis.sh --case .cases/<attempt-id> --condition trace-only
 ```
 
-Set `UI_RATER_CODEX_MODEL`, `UI_RATER_CODEX_REASONING_EFFORT`, or `UI_RATER_CODEX_COMMAND` only when overriding the pinned Codex harness defaults. The direct runner separately supports `UI_RATER_DIRECT_MODEL` and `UI_RATER_DIRECT_REASONING_EFFORT`. Results are written under `output/evidence-only/`, `output/source-explore/`, `output/direct-one-shot/`, `output/direct-trace-only/`, and `output/comparison.json`. See [`docs/LLM_AGENT_SANDBOX_V2.md`](docs/LLM_AGENT_SANDBOX_V2.md) for the case contract.
+Set `UI_RATER_CODEX_MODEL`, `UI_RATER_CODEX_REASONING_EFFORT`, or `UI_RATER_CODEX_COMMAND` only when overriding the pinned Codex harness defaults. The direct runner separately supports `UI_RATER_DIRECT_MODEL` and `UI_RATER_DIRECT_REASONING_EFFORT`. Every invocation writes an immutable directory under `output/runs/<analysis-run-id>/`; `output/latest.json` records the latest run ID for each harness. See [`docs/LLM_AGENT_SANDBOX_V2.md`](docs/LLM_AGENT_SANDBOX_V2.md) for the case contract.
 
 ## Suggested LLM pilot test
 
@@ -515,7 +517,7 @@ Set `UI_RATER_CODEX_MODEL`, `UI_RATER_CODEX_REASONING_EFFORT`, or `UI_RATER_CODE
 6. Confirm the trace is ordered, screenshots open correctly, and `source.files` includes files such as `src/components/ReviewSection.jsx`.
 7. Set `OPENAI_API_KEY`, call the normal analyze endpoint, and inspect `findings.json` plus `report.md`.
 
-The pilot succeeds at the infrastructure level when every accepted finding cites real event/snapshot IDs, every source candidate exists in `source.files`, and the recommendation is understandable from the cited evidence. Whether the recommendations are actually useful should still be judged manually in this first pilot.
+The pilot succeeds at the infrastructure level when every accepted finding describes task-specific friction, explains its task impact, and cites real event/snapshot IDs. Finding quality should still be judged manually in this first pilot.
 
 ## Manual outcome/retry pilot
 

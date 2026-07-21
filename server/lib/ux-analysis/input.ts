@@ -30,6 +30,10 @@ function compactEvent(event: InteractionEvent): Record<string, unknown> {
     key: event.key,
     scrollX: event.scrollX,
     scrollY: event.scrollY,
+    action_id: event.action_id,
+    phase: event.phase,
+    reason: event.reason,
+    skipped: event.skipped,
   }).filter(([, value]) => value !== undefined && value !== ''));
 }
 

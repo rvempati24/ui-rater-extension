@@ -29,15 +29,23 @@ test('new trials retain the configured site URL for analysis context', () => {
   assert.match(trials, /site_url:\s*config\.site_url/);
 });
 
-test('key snapshots are capped, debounced, and uploaded by session ID', () => {
+test('important actions receive paired snapshots with a high safety guard', () => {
   const background = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
   const content = fs.readFileSync(path.join(root, 'content.js'), 'utf8');
-  assert.match(background, /MAX_SNAPSHOTS = 20/);
-  assert.match(background, /SNAPSHOT_DEBOUNCE_MS = 750/);
+  assert.match(background, /MAX_SNAPSHOTS = 120/);
+  assert.match(background, /msg\.phase === 'before' \|\| msg\.phase === 'after'/);
+  assert.match(content, /requestSnapshot\('before-activate'/);
+  assert.match(content, /'after-click'/);
+  assert.match(content, /requestSnapshot\('before-edit'/);
+  assert.match(content, /'after-edit'/);
+  assert.match(content, /'after-scroll'/);
+  assert.match(content, /record\('snapshot-skipped'/);
+  assert.match(background, /actionId: msg\.actionId/);
+  assert.match(background, /phase: msg\.phase/);
   assert.match(background, /api\/sessions\/\$\{session\.sessionId\}\/snapshot/);
   assert.match(
     content,
-    /await flushToBackground\(\);[\s\S]*await requestSnapshot\('task-end'\)[\s\S]*tracking = false;/,
+    /await flushToBackground\(\);[\s\S]*await requestSnapshot\('task-end',[\s\S]*tracking = false;/,
     'task-end screenshot must be requested before tracking is marked inactive'
   );
 });
@@ -59,6 +67,16 @@ test('analysis input preserves every captured screenshot', () => {
   );
   assert.match(analysisInput, /snapshots:\s*session\.snapshots,/);
   assert.doesNotMatch(analysisInput, /session\.snapshots\.slice\(/);
+});
+
+test('server analysis uses the same problem-only finding contract', () => {
+  const prompt = fs.readFileSync(
+    path.join(root, 'server', 'lib', 'ux-analysis', 'prompt.ts'), 'utf8'
+  );
+  assert.match(prompt, /ux_problem/);
+  assert.match(prompt, /task_impact/);
+  assert.doesNotMatch(prompt, /recommendation:/);
+  assert.doesNotMatch(prompt, /source_candidates/);
 });
 
 test('completed sessions retain website provenance and attempt metadata', () => {

@@ -97,6 +97,9 @@ class MaterializeCaseTests(unittest.TestCase):
             self.assertFalse((destination / "website/.codex").exists())
             self.assertTrue((destination / "evidence/trace.json").exists())
             self.assertTrue((destination / "contract/finding.schema.json").exists())
+            self.assertTrue((destination / "evidence-manifest.json").exists())
+            self.assertTrue((destination / "analysis-case.json").exists())
+            self.assertEqual(case["evidence_manifest"], "evidence-manifest.json")
             self.assertTrue((destination / "output").is_dir())
             findings = {
                 "schema_version": 2, "attempt_id": "att_001", "findings": [{
@@ -188,12 +191,25 @@ class MaterializeCaseTests(unittest.TestCase):
             root = Path(temp)
             snapshots = root / "evidence/snapshots"
             snapshots.mkdir(parents=True)
+            (root / "evidence/trace.json").write_text('{"interactions": []}', encoding="utf-8")
             paths = []
             for number in range(1, 21):
                 relative = f"evidence/snapshots/s{number:04}.jpg"
                 (root / relative).write_bytes(b"image")
+                (root / relative).with_suffix(".json").write_text(json.dumps({
+                    "snapshot_id": f"s{number:04}", "ts": number, "reason": "test",
+                }), encoding="utf-8")
                 paths.append(relative)
-            case = {"evidence": {"snapshots": paths}}
+            case = {
+                "attempt_id": "att_test",
+                "analysis_case": "analysis-case.json",
+                "evidence": {"trace": "evidence/trace.json", "snapshots": paths},
+                "evidence_manifest": "evidence-manifest.json",
+            }
+            (root / "analysis-case.json").write_text(json.dumps({
+                "schema_version": 1, "attempt_id": "att_test",
+            }), encoding="utf-8")
+            materialize_case.write_evidence_manifest(root, case)
             selected_all = run_agent_analysis.select_snapshot_paths(root, case)
             selected_capped = run_agent_analysis.select_snapshot_paths(root, case, 4)
             self.assertEqual(len(selected_all), 20)
@@ -231,6 +247,8 @@ class MaterializeCaseTests(unittest.TestCase):
             destination = root / "case"
             case = materialize_case.materialize(attempt, destination, source, {"source": "local"})
             temp_root = root / "comparison"
+            analysis_run_id = "analysis_test"
+            run_root = destination / "output/runs" / analysis_run_id
             commands = []
 
             def fake_codex(command, **_kwargs):
@@ -249,13 +267,13 @@ class MaterializeCaseTests(unittest.TestCase):
                 results = [
                     run_agent_analysis.run_condition(
                         destination, case, condition, "codex", "test", "gpt-test", "medium",
-                        None, 60, temp_root,
+                        None, 60, temp_root, run_root, analysis_run_id,
                     )
                     for condition in ("evidence-only", "source-explore")
                 ]
             self.assertTrue(all(result["ok"] for result in results))
-            self.assertTrue((destination / "output/evidence-only/findings.json").is_file())
-            self.assertTrue((destination / "output/source-explore/findings.json").is_file())
+            self.assertTrue((run_root / "evidence-only/findings.json").is_file())
+            self.assertTrue((run_root / "source-explore/findings.json").is_file())
             for command in commands:
                 self.assertNotIn(str(destination), "\n".join(command))
 
@@ -305,7 +323,7 @@ class MaterializeCaseTests(unittest.TestCase):
             payload, manifest = run_direct_analysis.response_payload(
                 destination, case, "gpt-test", "medium"
             )
-            expected_json = 1 + len(list((destination / "evidence").rglob("*.json")))
+            expected_json = 3 + len(case["evidence"]["snapshots"])
             self.assertEqual(sum(item["kind"] == "json" for item in manifest), expected_json)
             self.assertEqual(
                 sum(item["kind"] == "image" for item in manifest),
@@ -326,6 +344,18 @@ class MaterializeCaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "loopback"):
             run_direct_analysis.ensure_loopback("https://example.com/v1")
 
+    def test_analysis_run_ids_are_unique_and_latest_tracks_each_harness(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)
+            first = run_agent_analysis.new_analysis_run_id()
+            second = run_agent_analysis.new_analysis_run_id()
+            self.assertNotEqual(first, second)
+            run_agent_analysis.update_latest(output, "codex", first)
+            run_agent_analysis.update_latest(output, "direct-one-shot", second)
+            latest = json.loads((output / "latest.json").read_text(encoding="utf-8"))
+            self.assertEqual(latest["runs"]["codex"], first)
+            self.assertEqual(latest["runs"]["direct-one-shot"], second)
+
     def test_direct_trace_only_payload_has_task_and_trace_but_no_images(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -338,7 +368,7 @@ class MaterializeCaseTests(unittest.TestCase):
                 destination, case, "gpt-test", "medium", "trace-only"
             )
             self.assertEqual(
-                [item["path"] for item in manifest], ["case.json", "evidence/trace.json"]
+                [item["path"] for item in manifest], ["analysis-case.json", "evidence/trace.json"]
             )
             self.assertTrue(all(item["kind"] == "json" for item in manifest))
             content = payload["input"][0]["content"]

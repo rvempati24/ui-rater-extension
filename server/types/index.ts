@@ -1,7 +1,7 @@
 export type InteractionEventKind =
   | 'pageload' | 'click' | 'rightclick' | 'scroll' | 'mousemove'
   | 'input' | 'change' | 'keydown' | 'formsubmit' | 'copy' | 'paste'
-  | 'focus' | 'resize' | 'navigate'
+  | 'focus' | 'resize' | 'navigate' | 'snapshot-skipped'
   // Compatibility with the existing side-by-side comparison UI.
   | 'expand' | 'collapse' | 'hover_start' | 'hover_end'
   | 'iframe_click' | 'iframe_scroll';
@@ -32,6 +32,10 @@ export interface InteractionEvent {
   title?: string;
   method?: string;
   action?: string;
+  action_id?: string;
+  phase?: 'before' | 'after';
+  reason?: string;
+  skipped?: string;
 }
 
 export interface Trial {
@@ -115,6 +119,9 @@ export interface WebsiteMetadata {
 export interface SnapshotMetadata {
   snapshot_id: string;
   reason: string;
+  action_id?: string;
+  phase?: 'before' | 'after';
+  event_kind?: string;
   ts: number;
   url?: string;
   title?: string;

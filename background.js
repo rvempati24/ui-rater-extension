@@ -3,8 +3,10 @@ importScripts('task-session.js');
 const DEFAULT_SERVER = 'https://ui-rater-production.up.railway.app';
 const ACTIVE_SESSION_KEY = '_activeSession';
 const WORKFLOW_KEY = '_taskWorkflow';
-const MAX_SNAPSHOTS = 20;
-const SNAPSHOT_DEBOUNCE_MS = 750;
+// A task normally produces paired before/after images for important actions.
+// This is a last-resort storage guard, not an analysis sampling policy.
+const MAX_SNAPSHOTS = 120;
+const SNAPSHOT_DEBOUNCE_MS = 400;
 
 let sessionWriteLock = Promise.resolve();
 let snapshotWriteLock = Promise.resolve();
@@ -320,7 +322,9 @@ async function captureSnapshot(msg, sender) {
 
     const now = Date.now();
     if (session.snapshotCount >= MAX_SNAPSHOTS) return { ok: true, skipped: 'limit' };
-    if (now - session.lastSnapshotAt < SNAPSHOT_DEBOUNCE_MS && msg.reason !== 'task-end') {
+    const isActionPair = msg.phase === 'before' || msg.phase === 'after';
+    if (now - session.lastSnapshotAt < SNAPSHOT_DEBOUNCE_MS
+      && msg.reason !== 'task-end' && !isActionPair) {
       return { ok: true, skipped: 'debounced' };
     }
 
@@ -336,6 +340,9 @@ async function captureSnapshot(msg, sender) {
         snapshotId,
         imageDataUrl,
         reason: msg.reason || 'state-change',
+        actionId: msg.actionId,
+        phase: msg.phase,
+        eventKind: msg.eventKind,
         ts: msg.ts,
         url: msg.url,
         title: msg.title,

@@ -119,6 +119,9 @@ export async function saveSnapshot(
     snapshotId: string;
     imageDataUrl: string;
     reason?: string;
+    actionId?: string;
+    phase?: 'before' | 'after';
+    eventKind?: string;
     ts?: number;
     url?: string;
     title?: string;
@@ -140,6 +143,9 @@ export async function saveSnapshot(
     const metadata: SnapshotMetadata = {
       snapshot_id: input.snapshotId,
       reason: input.reason || 'state-change',
+      action_id: typeof input.actionId === 'string' ? input.actionId.slice(0, 80) : undefined,
+      phase: input.phase === 'before' || input.phase === 'after' ? input.phase : undefined,
+      event_kind: typeof input.eventKind === 'string' ? input.eventKind.slice(0, 40) : undefined,
       ts: typeof input.ts === 'number' ? input.ts : 0,
       url: input.url,
       title: input.title,

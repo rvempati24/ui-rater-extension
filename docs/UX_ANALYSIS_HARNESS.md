@@ -38,20 +38,20 @@ Codex receives a temporary workspace containing the same trace and selected scre
 
 ### `direct-one-shot`
 
-One Responses API call receives `case.json`, every JSON document under `evidence/`, and every listed screenshot at high image detail. It receives no website source or recording and has no tools, shell, web access, or multi-turn agent loop. The request is sent to a loopback-only CLIProxyAPI endpoint with `store: false` and strict JSON Schema output.
+One Responses API call receives `analysis-case.json`, the canonical evidence manifest, the complete trace, every screenshot metadata document, and every listed screenshot at high image detail. It receives no website source or recording and has no tools, shell, web access, or multi-turn agent loop. The request is sent to a loopback-only CLIProxyAPI endpoint with `store: false` and strict JSON Schema output.
 
 ### `direct-trace-only`
 
-One Responses API call receives only `case.json` and the complete `trace.json`. It receives no screenshots, other evidence metadata, website source, recording, or tools. The prompt forbids unsupported visual claims and snapshot citations; output validation rejects any finding that cites a snapshot. This condition measures what the same model can infer from behavioral event data alone.
+One Responses API call receives only `analysis-case.json` and the complete `trace.json`. It receives no screenshots, other evidence metadata, website source, recording, or tools. The prompt forbids unsupported visual claims and snapshot citations; output validation rejects any finding that cites a snapshot. This condition measures what the same model can infer from behavioral event data alone.
 
-Each condition writes:
+Each invocation receives a unique analysis run ID and writes immutable artifacts:
 
 ```text
-output/<condition>/findings.json
-output/<condition>/run-metadata.json
+output/runs/<analysis-run-id>/<condition>/findings.json
+output/runs/<analysis-run-id>/<condition>/run-metadata.json
 ```
 
-The one-shot condition additionally writes `response.json` and `input-manifest.json` under `output/direct-one-shot/`. `output/comparison.json` records whether both Codex runs completed. Human comparison should score task relevance, evidence grounding, specificity, unsupported claims, and useful unique findings. The runner does not ask one model condition to judge the other.
+The one-shot condition additionally writes `response.json` and `input-manifest.json` beside its findings. A Codex run writes `comparison.json` at its run root. `output/latest.json` points to the latest run ID for each harness without overwriting history. Human comparison should score task relevance, evidence grounding, specificity, unsupported claims, and useful unique findings. The runner does not ask one model condition to judge the other.
 
 ## Security and reproducibility
 
@@ -60,5 +60,6 @@ The one-shot condition additionally writes `response.json` and `input-manifest.j
 - Codex reuses its existing saved authentication; model-generated subprocesses inherit no environment variables.
 - Hugging Face tokens and unrelated user environment variables are not passed to Codex.
 - Evidence and website digests are checked before and after each run.
+- `evidence-manifest.json` fixes the ordered evidence set and hashes every trace, screenshot metadata document, and image consumed by both primary methods.
 - Findings are rejected when they cite unknown event sequence numbers or snapshot IDs.
 - Direct analysis accepts only a loopback HTTP endpoint, reads its proxy key from a local ignored file, exposes no tools, and records hashes for every transmitted case file.

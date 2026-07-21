@@ -11,6 +11,11 @@ import shutil
 import stat
 import tempfile
 
+try:
+    from scripts.ux_evidence import write_evidence_manifest
+except ModuleNotFoundError:
+    from ux_evidence import write_evidence_manifest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -252,9 +257,24 @@ def materialize(
                      "recording": None if no_video or not (evidence / "recording.webm").is_file()
                      else "evidence/recording.webm"},
         "source_root": "website", "output_schema": "contract/finding.schema.json",
+        "analysis_case": "analysis-case.json",
+        "evidence_manifest": "evidence-manifest.json",
     }
+    analysis_case = {
+        "schema_version": 1,
+        "attempt_id": attempt["attempt_id"],
+        "attempt_status": attempt.get("status"),
+        "outcome": attempt.get("outcome"),
+        "task": case["task"],
+    }
+    (destination / "analysis-case.json").write_text(
+        json.dumps(analysis_case, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    write_evidence_manifest(destination, case)
     (destination / "case.json").write_text(json.dumps(case, indent=2, ensure_ascii=False), encoding="utf-8")
     make_read_only(evidence)
+    make_read_only(destination / "evidence-manifest.json")
+    make_read_only(destination / "analysis-case.json")
     make_read_only(destination / "website")
     return case
 

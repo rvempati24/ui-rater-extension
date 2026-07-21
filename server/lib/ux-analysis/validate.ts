@@ -3,8 +3,7 @@ import { UXFinding } from './types';
 export function validateFindings(
   value: unknown,
   validEventSeq: Set<number>,
-  validSnapshotIds: Set<string>,
-  validSourcePaths: Set<string>
+  validSnapshotIds: Set<string>
 ): { findings: UXFinding[]; rejected: Array<{ title?: string; reason: string }> } {
   const candidates = (value as { findings?: unknown[] })?.findings;
   if (!Array.isArray(candidates)) throw new Error('Model output does not contain findings[]');
@@ -14,15 +13,12 @@ export function validateFindings(
   for (const candidate of candidates as UXFinding[]) {
     const eventIds = candidate.evidence?.event_seq || [];
     const snapshotIds = candidate.evidence?.snapshot_ids || [];
-    const sourceCandidates = candidate.source_candidates || [];
     if (eventIds.length + snapshotIds.length === 0) {
       rejected.push({ title: candidate.title, reason: 'No evidence references' });
     } else if (eventIds.some((id) => !validEventSeq.has(id))) {
       rejected.push({ title: candidate.title, reason: 'Unknown event sequence' });
     } else if (snapshotIds.some((id) => !validSnapshotIds.has(id))) {
       rejected.push({ title: candidate.title, reason: 'Unknown snapshot ID' });
-    } else if (sourceCandidates.some((source) => !validSourcePaths.has(source.path))) {
-      rejected.push({ title: candidate.title, reason: 'Unknown source path' });
     } else {
       findings.push(candidate);
     }

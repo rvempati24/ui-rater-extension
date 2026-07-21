@@ -28,14 +28,13 @@ export async function analyzeSession(sessionId: string): Promise<AnalysisResult>
   const validated = validateFindings(
     modelResponse.output,
     new Set(session.interactions.flatMap((event) => typeof event.seq === 'number' ? [event.seq] : [])),
-    new Set(session.snapshots.map((snapshot) => snapshot.snapshot_id)),
-    new Set(input.source.files.map((file) => file.path))
+    new Set(session.snapshots.map((snapshot) => snapshot.snapshot_id))
   );
   const result: AnalysisResult = {
     schema_version: 1,
     session_id: sessionId,
     model: modelResponse.model,
-    prompt_version: 'source-aware-baseline-v1',
+    prompt_version: 'task-specific-problems-v2',
     findings: validated.findings,
     rejected: validated.rejected,
     source: {
