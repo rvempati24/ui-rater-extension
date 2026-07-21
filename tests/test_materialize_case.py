@@ -71,6 +71,14 @@ class MaterializeCaseTests(unittest.TestCase):
             run = json.loads(run_file.read_text())
             run["website"] = {"repo_id": "uxBench/website-generation", "revision": "rev", "path_in_repo": "m/s/r"}
             run_file.write_text(json.dumps(run), encoding="utf-8")
+            snapshot_file = attempt / "snapshots/s0001.json"
+            snapshot = json.loads(snapshot_file.read_text())
+            snapshot.update({
+                "action_id": "session:activate:uuid", "phase": "before",
+                "requested_ts": 90, "capture_started_ts": 95, "ts": 110,
+                "capture_latency_ms": 15, "timing_guarantee": "best-effort-before",
+            })
+            snapshot_file.write_text(json.dumps(snapshot), encoding="utf-8")
             source = root / "source"
             source.mkdir()
             (source / "package.json").write_text("{}", encoding="utf-8")
@@ -100,6 +108,13 @@ class MaterializeCaseTests(unittest.TestCase):
             self.assertTrue((destination / "evidence-manifest.json").exists())
             self.assertTrue((destination / "analysis-case.json").exists())
             self.assertEqual(case["evidence_manifest"], "evidence-manifest.json")
+            evidence_manifest = json.loads(
+                (destination / "evidence-manifest.json").read_text(encoding="utf-8")
+            )
+            manifest_snapshot = evidence_manifest["snapshots"][0]
+            self.assertEqual(manifest_snapshot["action_id"], "session:activate:uuid")
+            self.assertEqual(manifest_snapshot["captured_ts"], 110)
+            self.assertEqual(manifest_snapshot["timing_guarantee"], "best-effort-before")
             self.assertTrue((destination / "output").is_dir())
             findings = {
                 "schema_version": 2, "attempt_id": "att_001", "findings": [{

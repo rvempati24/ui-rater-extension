@@ -1,6 +1,6 @@
 # UI Rater Extension - UX Analysis Baseline
 
-This Chrome extension records interaction traces, tab video, and action-linked screenshots while a user completes a task on a synthetic website. Important activations, edits, submissions, and navigations are captured before and after when the browser permits it; settled scroll states and task boundaries are also captured. The local Next.js server stores one directory per task and can send the trace plus screenshots to an LLM for task-specific UX problem identification.
+This Chrome extension records interaction traces, tab video, and action-linked screenshots while a user completes a task on a synthetic website. Important activations, edits, submissions, and navigations are captured before and after when the browser permits it; settled scroll states and task boundaries are also captured. Pre-action captures are explicitly best-effort and record request/start/completion timing so analysis can verify whether the image actually preceded the linked action. The local Next.js server stores one directory per task and can send the trace plus screenshots to an LLM for task-specific UX problem identification.
 
 ## Baseline scope
 
@@ -9,6 +9,7 @@ The current version includes:
 - durable task traces backed by `chrome.storage.local`;
 - one immutable `data/sessions/<session-id>/` directory per recording attempt;
 - before/after screenshots for important actions, plus task boundaries and settled scroll states;
+- globally unique action IDs across full-page navigations and a reserved final screenshot slot for `task-end`;
 - one-pass multimodal UX analysis with evidence IDs;
 - optional bounded website source context and ranked source-file candidates;
 - optional local export and optional upload to [`uxBench/ux-task-trace`](https://huggingface.co/datasets/uxBench/ux-task-trace).

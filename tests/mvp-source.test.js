@@ -33,7 +33,11 @@ test('important actions receive paired snapshots with a high safety guard', () =
   const background = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
   const content = fs.readFileSync(path.join(root, 'content.js'), 'utf8');
   assert.match(background, /MAX_SNAPSHOTS = 120/);
+  assert.match(background, /RESERVED_TASK_END_SNAPSHOTS = 1/);
+  assert.match(background, /UiRaterTaskSession\.snapshotAdmission/);
   assert.match(background, /msg\.phase === 'before' \|\| msg\.phase === 'after'/);
+  assert.match(content, /crypto\.randomUUID\(\)/);
+  assert.doesNotMatch(content, /actionCounter/);
   assert.match(content, /requestSnapshot\('before-activate'/);
   assert.match(content, /'after-click'/);
   assert.match(content, /requestSnapshot\('before-edit'/);
@@ -42,6 +46,8 @@ test('important actions receive paired snapshots with a high safety guard', () =
   assert.match(content, /record\('snapshot-skipped'/);
   assert.match(background, /actionId: msg\.actionId/);
   assert.match(background, /phase: msg\.phase/);
+  assert.match(background, /timingGuarantee: msg\.phase === 'before' \? 'best-effort-before'/);
+  assert.match(background, /ts: capturedTs/);
   assert.match(background, /api\/sessions\/\$\{session\.sessionId\}\/snapshot/);
   assert.match(
     content,

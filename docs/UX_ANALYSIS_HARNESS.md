@@ -28,6 +28,8 @@ Primary references:
 
 The two Codex conditions use the same attempt, model, prompt contract, screenshot selection, output schema, and Codex version. By default they receive every screenshot captured for the attempt. An optional `--max-screenshots N` resource guard deterministically samples the full timeline rather than taking the first N images. The pinned defaults are `gpt-5.6-sol` with `medium` reasoning effort; both values are recorded in run metadata. A third condition uses the same model, reasoning effort, attempt, and schema, but intentionally changes the harness and input strategy.
 
+Screenshot metadata distinguishes requested time, capture start, and capture completion. `phase: before` means best-effort rather than a guaranteed pre-action frame; analyzers are instructed to compare `captured_ts` with the linked trace event before drawing a before/after conclusion. Action IDs include a session prefix and UUID so pairs remain unambiguous across full-page navigations.
+
 ### `evidence-only`
 
 Codex receives a temporary workspace containing only compact case metadata, `trace.json`, and copies of the selected screenshots. Those workspace-local screenshots are attached as image inputs. The website source is absent, not merely hidden by prompt instructions.

@@ -2,8 +2,21 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  beginRecordingOnTab, mergeSnapshotProgress, planTaskStart, resolveTaskView,
+  beginRecordingOnTab, mergeSnapshotProgress, planTaskStart, resolveTaskView, snapshotAdmission,
 } = require('../task-session.js');
+
+test('reserves the final screenshot slot for task-end', () => {
+  assert.deepEqual(snapshotAdmission(118, 120, 1, false), { allowed: true });
+  assert.deepEqual(
+    snapshotAdmission(119, 120, 1, false),
+    { allowed: false, reason: 'reserved-for-task-end' }
+  );
+  assert.deepEqual(snapshotAdmission(119, 120, 1, true), { allowed: true });
+  assert.deepEqual(
+    snapshotAdmission(120, 120, 1, true),
+    { allowed: false, reason: 'absolute-limit' }
+  );
+});
 
 test('snapshot progress merges into the latest session without losing interactions', () => {
   const latest = {

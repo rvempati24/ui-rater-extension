@@ -11,7 +11,6 @@
   const snapshotTimers = new Map();
   const editActionIds = new WeakMap();
   let pendingPointerAction = null;
-  let actionCounter = 0;
 
   function ts() { return Date.now() - originTime; }
 
@@ -41,8 +40,8 @@
   }
 
   function nextActionId(kind) {
-    actionCounter += 1;
-    return `${kind}-${actionCounter}`;
+    const sessionPrefix = sessionId ? sessionId.slice(0, 8) : 'pending';
+    return `${sessionPrefix}:${kind}:${crypto.randomUUID()}`;
   }
 
   function snapshotPayload(reason, details = {}) {

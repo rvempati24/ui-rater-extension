@@ -103,5 +103,18 @@
     };
   }
 
-  return { beginRecordingOnTab, mergeSnapshotProgress, planTaskStart, resolveTaskView };
+  function snapshotAdmission(snapshotCount, maxSnapshots, reservedTaskEndSnapshots, isTaskEnd) {
+    if (snapshotCount >= maxSnapshots) {
+      return { allowed: false, reason: 'absolute-limit' };
+    }
+    if (!isTaskEnd && snapshotCount >= maxSnapshots - reservedTaskEndSnapshots) {
+      return { allowed: false, reason: 'reserved-for-task-end' };
+    }
+    return { allowed: true };
+  }
+
+  return {
+    beginRecordingOnTab, mergeSnapshotProgress, planTaskStart, resolveTaskView,
+    snapshotAdmission,
+  };
 });

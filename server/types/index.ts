@@ -123,6 +123,10 @@ export interface SnapshotMetadata {
   phase?: 'before' | 'after';
   event_kind?: string;
   ts: number;
+  requested_ts?: number;
+  capture_started_ts?: number;
+  capture_latency_ms?: number;
+  timing_guarantee?: 'best-effort-before' | 'observed-state';
   url?: string;
   title?: string;
   viewport?: { width: number; height: number };

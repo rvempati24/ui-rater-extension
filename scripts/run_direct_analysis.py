@@ -84,6 +84,8 @@ def direct_prompt(condition: str) -> str:
         "snapshot IDs and explain the task impact. Do not perform a generic heuristic audit, infer hidden "
         "implementation details, suggest code changes, or provide implementation recommendations. It is valid "
         "to return an empty findings array when the evidence does not support a UX problem."
+        " A screenshot marked phase=before is best-effort; compare captured_ts with the linked action "
+        "event timestamp before treating it as a true pre-action state."
     )
     if condition == TRACE_ONLY_CONDITION:
         return common + (

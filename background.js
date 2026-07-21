@@ -6,6 +6,7 @@ const WORKFLOW_KEY = '_taskWorkflow';
 // A task normally produces paired before/after images for important actions.
 // This is a last-resort storage guard, not an analysis sampling policy.
 const MAX_SNAPSHOTS = 120;
+const RESERVED_TASK_END_SNAPSHOTS = 1;
 const SNAPSHOT_DEBOUNCE_MS = 400;
 
 let sessionWriteLock = Promise.resolve();
@@ -321,16 +322,26 @@ async function captureSnapshot(msg, sender) {
     if (!sender.tab.active) return { ok: false, error: 'Task tab is not active' };
 
     const now = Date.now();
-    if (session.snapshotCount >= MAX_SNAPSHOTS) return { ok: true, skipped: 'limit' };
+    const isTaskEnd = msg.reason === 'task-end';
+    const admission = UiRaterTaskSession.snapshotAdmission(
+      session.snapshotCount, MAX_SNAPSHOTS, RESERVED_TASK_END_SNAPSHOTS, isTaskEnd
+    );
+    if (!admission.allowed) return { ok: true, skipped: admission.reason };
     const isActionPair = msg.phase === 'before' || msg.phase === 'after';
     if (now - session.lastSnapshotAt < SNAPSHOT_DEBOUNCE_MS
       && msg.reason !== 'task-end' && !isActionPair) {
       return { ok: true, skipped: 'debounced' };
     }
 
+    const captureStartedAt = Date.now();
+    const sessionOriginTime = Number.isFinite(session.originTime)
+      ? session.originTime : captureStartedAt - (Number.isFinite(msg.ts) ? msg.ts : 0);
+    const captureStartedTs = Math.max(0, captureStartedAt - sessionOriginTime);
     const imageDataUrl = await chrome.tabs.captureVisibleTab(session.windowId, {
       format: 'jpeg', quality: 70,
     });
+    const capturedAt = Date.now();
+    const capturedTs = Math.max(0, capturedAt - sessionOriginTime);
     const snapshotId = `s${String(session.snapshotCount + 1).padStart(4, '0')}`;
     const serverUrl = data.serverUrl || DEFAULT_SERVER;
     const response = await fetch(`${serverUrl}/api/sessions/${session.sessionId}/snapshot`, {
@@ -343,7 +354,11 @@ async function captureSnapshot(msg, sender) {
         actionId: msg.actionId,
         phase: msg.phase,
         eventKind: msg.eventKind,
-        ts: msg.ts,
+        ts: capturedTs,
+        requestedTs: msg.ts,
+        captureStartedTs,
+        captureLatencyMs: Math.max(0, capturedAt - captureStartedAt),
+        timingGuarantee: msg.phase === 'before' ? 'best-effort-before' : 'observed-state',
         url: msg.url,
         title: msg.title,
         viewport: msg.viewport,
@@ -362,7 +377,7 @@ async function captureSnapshot(msg, sender) {
       // while the screenshot upload was in flight.
       if (updated) await chrome.storage.local.set({ [ACTIVE_SESSION_KEY]: updated });
     });
-    return { ok: true, snapshotId };
+    return { ok: true, snapshotId, capturedTs };
   });
 }
 

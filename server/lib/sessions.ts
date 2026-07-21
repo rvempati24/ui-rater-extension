@@ -123,6 +123,10 @@ export async function saveSnapshot(
     phase?: 'before' | 'after';
     eventKind?: string;
     ts?: number;
+    requestedTs?: number;
+    captureStartedTs?: number;
+    captureLatencyMs?: number;
+    timingGuarantee?: 'best-effort-before' | 'observed-state';
     url?: string;
     title?: string;
     viewport?: { width: number; height: number };
@@ -147,6 +151,14 @@ export async function saveSnapshot(
       phase: input.phase === 'before' || input.phase === 'after' ? input.phase : undefined,
       event_kind: typeof input.eventKind === 'string' ? input.eventKind.slice(0, 40) : undefined,
       ts: typeof input.ts === 'number' ? input.ts : 0,
+      requested_ts: typeof input.requestedTs === 'number' ? input.requestedTs : undefined,
+      capture_started_ts: typeof input.captureStartedTs === 'number'
+        ? input.captureStartedTs : undefined,
+      capture_latency_ms: typeof input.captureLatencyMs === 'number'
+        ? input.captureLatencyMs : undefined,
+      timing_guarantee: input.timingGuarantee === 'best-effort-before'
+        || input.timingGuarantee === 'observed-state'
+        ? input.timingGuarantee : undefined,
       url: input.url,
       title: input.title,
       viewport: input.viewport,
