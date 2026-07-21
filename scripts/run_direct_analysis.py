@@ -193,6 +193,9 @@ def main() -> int:
     response_file = output_dir / "response.json"
     metadata_file = output_dir / "run-metadata.json"
     manifest_file = output_dir / "input-manifest.json"
+    # Never let a failed rerun look successful because an earlier result remains.
+    for stale_file in (findings_file, response_file):
+        stale_file.unlink(missing_ok=True)
     manifest_file.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     before = {name: tree_digest(case_dir / name) for name in ("evidence", "website")}
     started = datetime.now(timezone.utc)

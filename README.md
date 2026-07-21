@@ -458,7 +458,7 @@ contract/   # lean instructions and output schema
 output/     # the agent's only writable directory
 ```
 
-The same case supports two controlled Codex conditions plus a direct one-shot ablation. The pinned defaults are `gpt-5.6-sol` with `medium` reasoning effort. `evidence-only` receives trace JSON plus key screenshots in a temporary workspace that contains no website source. `source-explore` may additionally search the read-only application source tree. `direct-one-shot` sends every case/evidence JSON document and every screenshot in one multimodal Responses request through the local CLIProxyAPI, without source, tools, or a multi-turn agent loop. All conditions report only evidence-grounded UX problems for the specific task; none proposes code changes. See [`docs/UX_ANALYSIS_HARNESS.md`](docs/UX_ANALYSIS_HARNESS.md) for the harness decision and comparison design.
+The same case supports two controlled Codex conditions plus a direct one-shot ablation. The pinned defaults are `gpt-5.6-sol` with `medium` reasoning effort. `evidence-only` receives trace JSON plus all captured screenshots in a temporary workspace that contains no website source. `source-explore` receives the same inputs and may additionally search a clean, read-only copy of the application source tree; prior analysis outputs are excluded. `direct-one-shot` sends every case/evidence JSON document and every screenshot in one multimodal Responses request through the local CLIProxyAPI, without source, tools, or a multi-turn agent loop. All conditions report only evidence-grounded UX problems for the specific task; none proposes code changes. See [`docs/UX_ANALYSIS_HARNESS.md`](docs/UX_ANALYSIS_HARNESS.md) for the harness decision and comparison design.
 
 Materialize a local accepted attempt on Windows:
 
@@ -488,6 +488,8 @@ powershell -ExecutionPolicy Bypass -File scripts\run-agent-analysis.ps1 `
 ```bash
 sh scripts/run-agent-analysis.sh --case .cases/<attempt-id> --condition both
 ```
+
+All captured screenshots are included by default. If a future attempt contains too many images for the available context budget, add `--max-screenshots N`; the runner samples evenly across the complete attempt instead of truncating the end of the task.
 
 With CLIProxyAPI running locally on its default port, run the direct one-shot ablation:
 

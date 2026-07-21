@@ -54,7 +54,10 @@ export async function prepareAnalysisInput(sessionId: string) {
     original_event_count: session.interactions.length,
     supplied_event_count: selectedEvents.length,
     trace: selectedEvents.map(compactEvent),
-    snapshots: session.snapshots.slice(0, 12),
+    // Capture already applies the per-attempt safety limit. Preserve the full
+    // visual timeline here so late-task confirmation and error states are not
+    // silently discarded by a second, arbitrary cap.
+    snapshots: session.snapshots,
     source: await collectSourceContext(undefined, session.manifest.app_id || ''),
     website_provenance: session.manifest.website as unknown as Record<string, unknown> | undefined,
   };

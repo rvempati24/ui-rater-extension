@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from test_export_traces import make_attempt
 
@@ -124,6 +125,22 @@ class MaterializeCaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unknown evidence"):
                 run_agent_analysis.validate_findings(destination, case, findings)
 
+    def test_selected_snapshot_validation_does_not_fall_back_when_set_is_empty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, attempt = make_attempt(root)
+            source = root / "source"
+            source.mkdir()
+            destination = root / "case"
+            case = materialize_case.materialize(attempt, destination, source, {"source": "local"})
+            findings = {"schema_version": 2, "attempt_id": "att_001", "findings": [{
+                "evidence": {"event_seq": [], "snapshot_ids": ["s0001"]},
+            }]}
+            with self.assertRaisesRegex(ValueError, "unknown evidence"):
+                run_agent_analysis.validate_findings(
+                    destination, case, findings, allowed_snapshot_ids=set()
+                )
+
     def test_evidence_only_workspace_excludes_website_source(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -138,8 +155,109 @@ class MaterializeCaseTests(unittest.TestCase):
                 destination, case, comparison_root, [destination / "evidence/snapshots/s0001.jpg"]
             )
             self.assertTrue((workspace / "trace.json").is_file())
+            self.assertTrue((workspace / "screenshots/s0001.jpg").is_file())
+            self.assertTrue((workspace / "finding.schema.json").is_file())
             self.assertFalse((workspace / "website").exists())
             self.assertNotIn("source_root", json.loads((workspace / "case.json").read_text()))
+
+    def test_source_workspace_excludes_prior_outputs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, attempt = make_attempt(root)
+            source = root / "source"
+            source.mkdir()
+            (source / "app.js").write_text("source", encoding="utf-8")
+            destination = root / "case"
+            case = materialize_case.materialize(attempt, destination, source, {"source": "local"})
+            prior = destination / "output/evidence-only/findings.json"
+            prior.parent.mkdir(parents=True)
+            prior.write_text('{"leaked": true}', encoding="utf-8")
+            workspace = run_agent_analysis.source_workspace(
+                destination, case, root / "comparison",
+                [destination / "evidence/snapshots/s0001.jpg"],
+            )
+            self.assertEqual(workspace.name, "source-explore")
+            self.assertTrue((workspace / "website/app.js").is_file())
+            self.assertTrue((workspace / "trace.json").is_file())
+            self.assertTrue((workspace / "screenshots/s0001.jpg").is_file())
+            self.assertFalse((workspace / "output").exists())
+            self.assertFalse((workspace / "evidence").exists())
+
+    def test_screenshot_selection_defaults_to_all_and_cap_spans_attempt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            snapshots = root / "evidence/snapshots"
+            snapshots.mkdir(parents=True)
+            paths = []
+            for number in range(1, 21):
+                relative = f"evidence/snapshots/s{number:04}.jpg"
+                (root / relative).write_bytes(b"image")
+                paths.append(relative)
+            case = {"evidence": {"snapshots": paths}}
+            selected_all = run_agent_analysis.select_snapshot_paths(root, case)
+            selected_capped = run_agent_analysis.select_snapshot_paths(root, case, 4)
+            self.assertEqual(len(selected_all), 20)
+            self.assertEqual(
+                [path.name for path in selected_capped],
+                ["s0001.jpg", "s0007.jpg", "s0014.jpg", "s0020.jpg"],
+            )
+
+    def test_evidence_and_source_workspaces_can_share_one_temporary_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, attempt = make_attempt(root)
+            source = root / "source"
+            source.mkdir()
+            (source / "app.js").write_text("source", encoding="utf-8")
+            destination = root / "case"
+            case = materialize_case.materialize(attempt, destination, source, {"source": "local"})
+            screenshot = [destination / "evidence/snapshots/s0001.jpg"]
+            evidence = run_agent_analysis.evidence_workspace(
+                destination, case, root / "comparison", screenshot
+            )
+            source_copy = run_agent_analysis.source_workspace(
+                destination, case, root / "comparison", screenshot
+            )
+            self.assertEqual(evidence.name, "evidence-only")
+            self.assertEqual(source_copy.name, "source-explore")
+
+    def test_both_conditions_publish_validated_outputs_without_exposing_case_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, attempt = make_attempt(root)
+            source = root / "source"
+            source.mkdir()
+            (source / "app.js").write_text("source", encoding="utf-8")
+            destination = root / "case"
+            case = materialize_case.materialize(attempt, destination, source, {"source": "local"})
+            temp_root = root / "comparison"
+            commands = []
+
+            def fake_codex(command, **_kwargs):
+                commands.append(command)
+                candidate = Path(command[command.index("-o") + 1])
+                candidate.write_text(json.dumps({
+                    "schema_version": 2,
+                    "attempt_id": "att_001",
+                    "findings": [{"evidence": {"event_seq": [1], "snapshot_ids": []}}],
+                }), encoding="utf-8")
+                return run_agent_analysis.subprocess.CompletedProcess(command, 0, "", "")
+
+            with mock.patch.object(
+                run_agent_analysis.subprocess, "run", side_effect=fake_codex
+            ):
+                results = [
+                    run_agent_analysis.run_condition(
+                        destination, case, condition, "codex", "test", "gpt-test", "medium",
+                        None, 60, temp_root,
+                    )
+                    for condition in ("evidence-only", "source-explore")
+                ]
+            self.assertTrue(all(result["ok"] for result in results))
+            self.assertTrue((destination / "output/evidence-only/findings.json").is_file())
+            self.assertTrue((destination / "output/source-explore/findings.json").is_file())
+            for command in commands:
+                self.assertNotIn(str(destination), "\n".join(command))
 
     def test_codex_command_is_ephemeral_read_only_and_schema_bound(self):
         command = run_agent_analysis.codex_command(

@@ -53,6 +53,14 @@ test('analysis and export entrypoints exist without automatic external writes', 
   assert.equal(exportConfig.hf_repo_id, 'uxBench/ux-task-trace');
 });
 
+test('analysis input preserves every captured screenshot', () => {
+  const analysisInput = fs.readFileSync(
+    path.join(root, 'server', 'lib', 'ux-analysis', 'input.ts'), 'utf8'
+  );
+  assert.match(analysisInput, /snapshots:\s*session\.snapshots,/);
+  assert.doesNotMatch(analysisInput, /session\.snapshots\.slice\(/);
+});
+
 test('completed sessions retain website provenance and attempt metadata', () => {
   const completeRoute = fs.readFileSync(path.join(
     root, 'server', 'app', 'api', 'complete-task', 'route.ts'

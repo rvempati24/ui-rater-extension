@@ -32,15 +32,38 @@ def load_trace(case_dir: Path, case: dict) -> tuple[dict, set[int]]:
     return trace, {event.get("seq") for event in events if isinstance(event, dict)}
 
 
+def select_snapshot_paths(
+    case_dir: Path, case: dict, max_screenshots: int | None = None
+) -> list[Path]:
+    """Return all screenshots, or a deterministic sample spanning the attempt."""
+    screenshots = [
+        (case_dir / path).resolve() for path in case["evidence"].get("snapshots", [])
+    ]
+    missing = [path for path in screenshots if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"Case screenshot is missing: {missing[0]}")
+    if max_screenshots is None or max_screenshots >= len(screenshots):
+        return screenshots
+    if max_screenshots < 1:
+        raise ValueError("max_screenshots must be at least 1 when set")
+    if max_screenshots == 1:
+        return [screenshots[-1]]
+    last = len(screenshots) - 1
+    indices = [round(position * last / (max_screenshots - 1)) for position in range(max_screenshots)]
+    return [screenshots[index] for index in indices]
+
+
 def validate_findings(
     case_dir: Path, case: dict, findings: dict, allowed_snapshot_ids: set[str] | None = None
 ) -> None:
     if findings.get("schema_version") != 2 or findings.get("attempt_id") != case.get("attempt_id"):
         raise ValueError("Output schema_version/attempt_id does not match case.json")
     _, event_ids = load_trace(case_dir, case)
-    snapshot_ids = allowed_snapshot_ids or {
-        Path(path).stem for path in case["evidence"].get("snapshots", [])
-    }
+    snapshot_ids = (
+        allowed_snapshot_ids
+        if allowed_snapshot_ids is not None
+        else {Path(path).stem for path in case["evidence"].get("snapshots", [])}
+    )
     for finding in findings.get("findings", []):
         evidence = finding.get("evidence") or {}
         cited_events = set(evidence.get("event_seq") or [])
@@ -56,14 +79,22 @@ def validate_findings(
 
 
 def evidence_workspace(
-    case_dir: Path, case: dict, destination: Path, snapshot_paths: list[Path] | None = None
+    case_dir: Path, case: dict, destination: Path, snapshot_paths: list[Path] | None = None,
+    workspace_name: str = "evidence-only",
 ) -> Path:
-    workspace = destination / "evidence-only"
+    workspace = destination / workspace_name
     workspace.mkdir(parents=True)
     trace, _ = load_trace(case_dir, case)
-    selected_snapshots = snapshot_paths or [
-        case_dir / path for path in case["evidence"].get("snapshots", [])
-    ]
+    selected_snapshots = (
+        snapshot_paths
+        if snapshot_paths is not None
+        else [case_dir / path for path in case["evidence"].get("snapshots", [])]
+    )
+    if selected_snapshots:
+        snapshot_dir = workspace / "screenshots"
+        snapshot_dir.mkdir()
+        for snapshot in selected_snapshots:
+            shutil.copy2(snapshot, snapshot_dir / snapshot.name)
     compact_case = {
         "schema_version": case.get("schema_version"),
         "attempt_id": case.get("attempt_id"),
@@ -80,6 +111,27 @@ def evidence_workspace(
     )
     (workspace / "trace.json").write_text(
         json.dumps(trace, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    shutil.copy2(case_dir / case["output_schema"], workspace / "finding.schema.json")
+    return workspace
+
+
+def source_workspace(
+    case_dir: Path, case: dict, destination: Path, snapshot_paths: list[Path]
+) -> Path:
+    """Build a source condition workspace without evidence from previous analyses."""
+    workspace = evidence_workspace(
+        case_dir, case, destination, snapshot_paths, workspace_name="source-explore"
+    )
+    source_root = case_dir / case.get("source_root", "website")
+    if not source_root.is_dir():
+        raise FileNotFoundError(f"Website source does not exist: {source_root}")
+    website = workspace / "website"
+    shutil.copytree(source_root, website)
+    compact_case = json.loads((workspace / "case.json").read_text(encoding="utf-8"))
+    compact_case["source_root"] = "website"
+    (workspace / "case.json").write_text(
+        json.dumps(compact_case, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return workspace
 
@@ -156,7 +208,7 @@ def run_condition(
     harness_version: str,
     model: str | None,
     reasoning_effort: str,
-    max_screenshots: int,
+    max_screenshots: int | None,
     timeout: int,
     temp_root: Path,
 ) -> dict:
@@ -166,20 +218,19 @@ def run_condition(
     metadata_file = output_dir / "run-metadata.json"
     if findings_file.exists():
         findings_file.unlink()
-    screenshots = [
-        (case_dir / path).resolve()
-        for path in case["evidence"].get("snapshots", [])[:max_screenshots]
-    ]
+    screenshots = select_snapshot_paths(case_dir, case, max_screenshots)
     if condition == "evidence-only":
         workspace = evidence_workspace(case_dir, case, temp_root, screenshots)
     else:
-        workspace = case_dir
-    schema = (case_dir / case["output_schema"]).resolve()
+        workspace = source_workspace(case_dir, case, temp_root, screenshots)
+    workspace_screenshots = [workspace / "screenshots" / path.name for path in screenshots]
+    schema = workspace / "finding.schema.json"
+    workspace_findings_file = workspace / "findings.json"
     instructions = (case_dir / "contract" / "instructions.md").resolve()
     prompt = instructions.read_text(encoding="utf-8") + "\n" + prompt_for(condition)
     command = codex_command(
-        executable, workspace, model, reasoning_effort, schema, findings_file,
-        screenshots,
+        executable, workspace, model, reasoning_effort, schema, workspace_findings_file,
+        workspace_screenshots,
     )
     before = {name: tree_digest(case_dir / name) for name in ("evidence", "website")}
     started = datetime.now(timezone.utc)
@@ -202,14 +253,16 @@ def run_condition(
         error = f"Codex timed out after {timeout} seconds"
     elif result.returncode != 0:
         error = f"Codex exited with status {result.returncode}"
-    elif not findings_file.exists():
+    elif not workspace_findings_file.exists():
         error = "Codex did not create findings.json"
     else:
         try:
+            findings_text = workspace_findings_file.read_text(encoding="utf-8")
             validate_findings(
-                case_dir, case, json.loads(findings_file.read_text(encoding="utf-8")),
+                case_dir, case, json.loads(findings_text),
                 {path.stem for path in screenshots},
             )
+            findings_file.write_text(findings_text, encoding="utf-8")
         except (ValueError, json.JSONDecodeError) as validation_error:
             error = f"Output validation failed: {validation_error}"
     metadata = {
@@ -220,6 +273,12 @@ def run_condition(
         "case_id": case.get("case_id"),
         "attempt_id": case.get("attempt_id"), "dataset": case.get("dataset"),
         "website": case.get("website"), "screenshots": [path.name for path in screenshots],
+        "screenshot_selection": {
+            "policy": "all" if max_screenshots is None else "uniform",
+            "limit": max_screenshots,
+            "available": len(case["evidence"].get("snapshots", [])),
+            "selected": len(screenshots),
+        },
         "started_at": started.isoformat(),
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "exit_code": result.returncode, "error": error,
@@ -245,10 +304,16 @@ def main() -> int:
         default=os.getenv("UI_RATER_CODEX_REASONING_EFFORT", DEFAULT_REASONING_EFFORT),
     )
     parser.add_argument("--codex-command", default=os.getenv("UI_RATER_CODEX_COMMAND", "codex"))
-    parser.add_argument("--max-screenshots", type=int, default=12)
+    parser.add_argument(
+        "--max-screenshots", type=int,
+        help=(
+            "optional resource cap; by default all captured screenshots are supplied. "
+            "When capped, screenshots are sampled uniformly across the full attempt"
+        ),
+    )
     parser.add_argument("--timeout", type=int, default=1800)
     args = parser.parse_args()
-    if args.max_screenshots < 1:
+    if args.max_screenshots is not None and args.max_screenshots < 1:
         parser.error("--max-screenshots must be at least 1")
     if not shutil.which(args.codex_command):
         raise FileNotFoundError(f"Codex executable not found: {args.codex_command}")
