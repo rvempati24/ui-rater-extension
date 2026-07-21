@@ -31,7 +31,7 @@ It intentionally does not include a database, job queue, multi-agent pipeline, a
 | Run LLM analysis | `POST /api/sessions/<session-id>/analyze` |
 | Preview/export/upload traces | use `scripts/export-traces.ps1` on Windows or `scripts/export-traces.sh` on Linux/macOS |
 | Build a coding-agent case | use `scripts/materialize-case.ps1` or `scripts/materialize-case.sh` |
-| Run OpenCode/Claude on a case | use `scripts/run-agent-analysis.ps1` or `scripts/run-agent-analysis.sh` |
+| Compare evidence-only vs source-explore UX analysis | use `scripts/run-agent-analysis.ps1` or `scripts/run-agent-analysis.sh` |
 
 The sections below give complete commands, configuration, expected outputs, and validation steps for each entry point.
 
@@ -179,6 +179,10 @@ powershell -ExecutionPolicy Bypass -File scripts\reconcile-hf.ps1
 ```bash
 sh scripts/reconcile-hf.sh --hf-repo uxBench/ux-task-trace --hf-revision participant-v2
 ```
+
+## Codex authentication on the analysis worker
+
+The analysis runner directly reuses the machine's existing Codex login. Check it once with `codex login status`; no API proxy or separate API key is required.
 
 ## Start the server
 
@@ -438,6 +442,10 @@ All model-facing code is isolated in `server/lib/ux-analysis/`:
 
 The HTTP request cannot supply a filesystem path. `UI_RATER_WEBSITE_SOURCE_DIR` must be configured by the server operator, and its final directory name must match the session's `app_id`. For the current pilot, that name is `20260625-090547-allrecipes`.
 
+## Analysis-worker scope
+
+The intended role of this machine is narrow: download one UX task attempt and the matching mocked website source, then identify UX problems that participant encountered while completing that attempt's specific task. It does not collect traces, modify the website, propose code changes, or aggregate conclusions across attempts.
+
 ## Dataset-to-agent analysis
 
 The v2 analysis flow uses `uxBench/ux-task-trace` as a reproducible evidence baseline. It selects one accepted attempt, obtains exact website provenance from its parent `run.json`, downloads or reuses the matching website source revision, validates checksums, and materializes a sandbox:
@@ -445,12 +453,12 @@ The v2 analysis flow uses `uxBench/ux-task-trace` as a reproducible evidence bas
 ```text
 case.json
 evidence/   # participant, run, task, attempt, trace, screenshots, optional video
-website/    # exact source revision, read-only
+website/    # application source from exact revision, read-only; agent configs excluded
 contract/   # lean instructions and output schema
 output/     # the agent's only writable directory
 ```
 
-The same case supports two comparison conditions: the existing compact multimodal API baseline, or an OpenCode/Claude Code-style agent that can search the complete source tree. The adapter strips HF credentials, marks evidence/source read-only where the OS supports it, and rejects output if their before/after digests differ. Network isolation still depends on the host/container running the CLI. Every output records the trace-dataset commit and source commit for reproducibility.
+The same case supports two controlled Codex conditions plus a direct one-shot ablation. The pinned defaults are `gpt-5.6-sol` with `medium` reasoning effort. `evidence-only` receives trace JSON plus key screenshots in a temporary workspace that contains no website source. `source-explore` may additionally search the read-only application source tree. `direct-one-shot` sends every case/evidence JSON document and every screenshot in one multimodal Responses request through the local CLIProxyAPI, without source, tools, or a multi-turn agent loop. All conditions report only evidence-grounded UX problems for the specific task; none proposes code changes. See [`docs/UX_ANALYSIS_HARNESS.md`](docs/UX_ANALYSIS_HARNESS.md) for the harness decision and comparison design.
 
 Materialize a local accepted attempt on Windows:
 
@@ -470,18 +478,30 @@ sh scripts/materialize-case.sh \
 
 Both commands reject non-accepted attempts by default. For an explicit audit investigation, add `-Audit` on PowerShell or `--audit` on Linux/macOS; unfinished `recording` and `completed_pending_outcome` attempts are always rejected.
 
-Run an installed agent CLI:
+Run both controlled conditions through the already authenticated Codex CLI:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\run-agent-analysis.ps1 `
-  -Case .cases\<attempt-id> -Adapter opencode
+  -Case .cases\<attempt-id> -Condition both
 ```
 
 ```bash
-sh scripts/run-agent-analysis.sh --case .cases/<attempt-id> --adapter claude
+sh scripts/run-agent-analysis.sh --case .cases/<attempt-id> --condition both
 ```
 
-Use `UI_RATER_OPENCODE_COMMAND` or `UI_RATER_CLAUDE_COMMAND` when the CLI proxy needs a custom command prefix. The adapter passes only a small environment allow-list; add a required proxy variable explicitly with the Python entry point's repeatable `--pass-env NAME` option. See [`docs/LLM_AGENT_SANDBOX_V2.md`](docs/LLM_AGENT_SANDBOX_V2.md) for the full contract.
+With CLIProxyAPI running locally on its default port, run the direct one-shot ablation:
+
+```bash
+sh scripts/run-direct-analysis.sh --case .cases/<attempt-id>
+```
+
+Run the trace-only ablation with the same model and reasoning effort:
+
+```bash
+sh scripts/run-direct-analysis.sh --case .cases/<attempt-id> --condition trace-only
+```
+
+Set `UI_RATER_CODEX_MODEL`, `UI_RATER_CODEX_REASONING_EFFORT`, or `UI_RATER_CODEX_COMMAND` only when overriding the pinned Codex harness defaults. The direct runner separately supports `UI_RATER_DIRECT_MODEL` and `UI_RATER_DIRECT_REASONING_EFFORT`. Results are written under `output/evidence-only/`, `output/source-explore/`, `output/direct-one-shot/`, `output/direct-trace-only/`, and `output/comparison.json`. See [`docs/LLM_AGENT_SANDBOX_V2.md`](docs/LLM_AGENT_SANDBOX_V2.md) for the case contract.
 
 ## Suggested LLM pilot test
 

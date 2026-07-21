@@ -8,4 +8,4 @@ elif [ -x "$SCRIPT_DIR/../.venv/bin/python" ]; then
 else
   PYTHON_COMMAND=python3
 fi
-exec "$PYTHON_COMMAND" "$SCRIPT_DIR/materialize_case.py" "$@"
+exec "$PYTHON_COMMAND" "$SCRIPT_DIR/run_direct_analysis.py" "$@"

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -18,6 +19,12 @@ RUNNER_SPEC = importlib.util.spec_from_file_location("run_agent_analysis", RUNNE
 assert RUNNER_SPEC and RUNNER_SPEC.loader
 run_agent_analysis = importlib.util.module_from_spec(RUNNER_SPEC)
 RUNNER_SPEC.loader.exec_module(run_agent_analysis)
+
+DIRECT_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_direct_analysis.py"
+DIRECT_SPEC = importlib.util.spec_from_file_location("run_direct_analysis", DIRECT_SCRIPT)
+assert DIRECT_SPEC and DIRECT_SPEC.loader
+run_direct_analysis = importlib.util.module_from_spec(DIRECT_SPEC)
+DIRECT_SPEC.loader.exec_module(run_direct_analysis)
 
 
 class MaterializeCaseTests(unittest.TestCase):
@@ -66,22 +73,41 @@ class MaterializeCaseTests(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             (source / "package.json").write_text("{}", encoding="utf-8")
+            (source / "AGENTS.md").write_text("malicious instructions", encoding="utf-8")
+            (source / "prompt.txt").write_text("generator prompt", encoding="utf-8")
+            (source / "opencode-session.json").write_text("{}", encoding="utf-8")
+            (source / "trials-config.json").write_text(
+                json.dumps({"expected_user_flow": ["secret"]}), encoding="utf-8"
+            )
+            (source / "tests").mkdir()
+            (source / "tests" / "expected-flow.js").write_text("secret", encoding="utf-8")
+            (source / ".codex").mkdir()
+            (source / ".codex/config.toml").write_text("web_search = 'live'", encoding="utf-8")
             destination = root / "case"
             case = materialize_case.materialize(attempt, destination, source, {"source": "local"})
             self.assertEqual(case["attempt_id"], "att_001")
             self.assertEqual(case["task"]["source_position"], 5)
             self.assertTrue((destination / "website/package.json").exists())
+            self.assertFalse((destination / "website/AGENTS.md").exists())
+            self.assertFalse((destination / "website/prompt.txt").exists())
+            self.assertFalse((destination / "website/opencode-session.json").exists())
+            self.assertFalse((destination / "website/trials-config.json").exists())
+            self.assertFalse((destination / "website/tests").exists())
+            self.assertFalse((destination / "website/.codex").exists())
             self.assertTrue((destination / "evidence/trace.json").exists())
             self.assertTrue((destination / "contract/finding.schema.json").exists())
             self.assertTrue((destination / "output").is_dir())
             findings = {
                 "schema_version": 2, "attempt_id": "att_001", "findings": [{
-                    "title": "Issue", "observation": "Observed", "inference": "Likely",
-                    "recommendation": "Change", "evidence": {"event_seq": [1], "snapshot_ids": ["s0001"]},
-                    "source_paths": ["package.json"],
+                    "title": "Issue", "ux_problem": "The control was unclear",
+                    "observation": "Observed", "task_impact": "Slowed the task",
+                    "severity": "medium", "confidence": "high",
+                    "evidence": {"event_seq": [1], "snapshot_ids": ["s0001"]},
                 }],
             }
             run_agent_analysis.validate_findings(destination, case, findings)
+            schema = json.loads((destination / "contract/finding.schema.json").read_text())
+            self.assertNotIn("recommendation", schema["properties"]["findings"]["items"]["properties"])
 
     def test_rejects_unknown_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -93,10 +119,129 @@ class MaterializeCaseTests(unittest.TestCase):
             destination = root / "case"
             case = materialize_case.materialize(attempt, destination, source, {"source": "local"})
             findings = {"schema_version": 2, "attempt_id": "att_001", "findings": [{
-                "evidence": {"event_seq": [99], "snapshot_ids": []}, "source_paths": [],
+                "evidence": {"event_seq": [99], "snapshot_ids": []},
             }]}
             with self.assertRaisesRegex(ValueError, "unknown evidence"):
                 run_agent_analysis.validate_findings(destination, case, findings)
+
+    def test_evidence_only_workspace_excludes_website_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, attempt = make_attempt(root)
+            source = root / "source"
+            source.mkdir()
+            (source / "secret-source.js").write_text("source", encoding="utf-8")
+            destination = root / "case"
+            case = materialize_case.materialize(attempt, destination, source, {"source": "local"})
+            comparison_root = root / "comparison"
+            workspace = run_agent_analysis.evidence_workspace(
+                destination, case, comparison_root, [destination / "evidence/snapshots/s0001.jpg"]
+            )
+            self.assertTrue((workspace / "trace.json").is_file())
+            self.assertFalse((workspace / "website").exists())
+            self.assertNotIn("source_root", json.loads((workspace / "case.json").read_text()))
+
+    def test_codex_command_is_ephemeral_read_only_and_schema_bound(self):
+        command = run_agent_analysis.codex_command(
+            "codex", Path("/case"), "gpt-test", "medium",
+            Path("/case/schema.json"), Path("/case/output.json"),
+            [Path("/case/s0001.jpg")],
+        )
+        self.assertIn("--ephemeral", command)
+        self.assertIn("--ignore-user-config", command)
+        self.assertIn("--ignore-rules", command)
+        self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
+        self.assertIn('web_search="disabled"', command)
+        self.assertIn('shell_environment_policy.inherit="none"', command)
+        self.assertIn('model_reasoning_effort="medium"', command)
+        self.assertIn("/case/s0001.jpg", command)
+        self.assertEqual(command[-1], "-")
+
+    def test_safe_environment_does_not_pass_home_or_hf_token(self):
+        old_home = os.environ.get("HOME")
+        old_hf = os.environ.get("HF_TOKEN")
+        try:
+            os.environ["HOME"] = "/sensitive-home"
+            os.environ["HF_TOKEN"] = "hf-secret"
+            environment = run_agent_analysis.safe_environment()
+            self.assertEqual(environment["HOME"], "/sensitive-home")
+            self.assertNotIn("HF_TOKEN", environment)
+        finally:
+            if old_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = old_home
+            if old_hf is None:
+                os.environ.pop("HF_TOKEN", None)
+            else:
+                os.environ["HF_TOKEN"] = old_hf
+
+    def test_direct_payload_includes_all_json_and_images_without_tools(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, attempt = make_attempt(root)
+            source = root / "source"
+            source.mkdir()
+            destination = root / "case"
+            case = materialize_case.materialize(attempt, destination, source, {"source": "local"})
+            payload, manifest = run_direct_analysis.response_payload(
+                destination, case, "gpt-test", "medium"
+            )
+            expected_json = 1 + len(list((destination / "evidence").rglob("*.json")))
+            self.assertEqual(sum(item["kind"] == "json" for item in manifest), expected_json)
+            self.assertEqual(
+                sum(item["kind"] == "image" for item in manifest),
+                len(case["evidence"]["snapshots"]),
+            )
+            self.assertEqual(payload["model"], "gpt-test")
+            self.assertEqual(payload["reasoning"], {"effort": "medium"})
+            self.assertFalse(payload["store"])
+            self.assertNotIn("tools", payload)
+            self.assertEqual(payload["text"]["format"]["type"], "json_schema")
+            content_types = [item["type"] for item in payload["input"][0]["content"]]
+            self.assertIn("input_text", content_types)
+            self.assertIn("input_image", content_types)
+
+    def test_direct_endpoint_must_be_loopback_http(self):
+        run_direct_analysis.ensure_loopback("http://127.0.0.1:8317/v1")
+        run_direct_analysis.ensure_loopback("http://localhost:8317/v1")
+        with self.assertRaisesRegex(ValueError, "loopback"):
+            run_direct_analysis.ensure_loopback("https://example.com/v1")
+
+    def test_direct_trace_only_payload_has_task_and_trace_but_no_images(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, attempt = make_attempt(root)
+            source = root / "source"
+            source.mkdir()
+            destination = root / "case"
+            case = materialize_case.materialize(attempt, destination, source, {"source": "local"})
+            payload, manifest = run_direct_analysis.response_payload(
+                destination, case, "gpt-test", "medium", "trace-only"
+            )
+            self.assertEqual(
+                [item["path"] for item in manifest], ["case.json", "evidence/trace.json"]
+            )
+            self.assertTrue(all(item["kind"] == "json" for item in manifest))
+            content = payload["input"][0]["content"]
+            self.assertNotIn("input_image", [item["type"] for item in content])
+            self.assertIn("no screenshots are provided", content[0]["text"])
+
+    def test_direct_trace_only_rejects_snapshot_citations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, attempt = make_attempt(root)
+            source = root / "source"
+            source.mkdir()
+            destination = root / "case"
+            case = materialize_case.materialize(attempt, destination, source, {"source": "local"})
+            findings = {"schema_version": 2, "attempt_id": "att_001", "findings": [{
+                "evidence": {"event_seq": [1], "snapshot_ids": ["s0001"]},
+            }]}
+            with self.assertRaisesRegex(ValueError, "Trace-only"):
+                run_direct_analysis.validate_findings(
+                    destination, case, findings, allow_snapshot_citations=False
+                )
 
 
 if __name__ == "__main__":

@@ -1,10 +1,16 @@
 param(
   [Parameter(Mandatory=$true)][string]$Case,
-  [ValidateSet("opencode", "claude")][string]$Adapter = "opencode",
-  [string]$Command = ""
+  [ValidateSet("evidence-only", "source-explore", "both")][string]$Condition = "both",
+  [string]$Model = "gpt-5.6-sol",
+  [ValidateSet("minimal", "low", "medium", "high", "xhigh")][string]$ReasoningEffort = "medium"
 )
-$arguments = @("$PSScriptRoot\run_agent_analysis.py", "--case", $Case, "--adapter", $Adapter)
-if ($Command) { $arguments += @("--command", $Command) }
+$arguments = @(
+  "$PSScriptRoot\run_agent_analysis.py", "--case", $Case, "--condition", $Condition,
+  "--reasoning-effort", $ReasoningEffort
+)
+if ($Model) {
+  $arguments += @("--model", $Model)
+}
 if ($env:PYTHON) { & $env:PYTHON @arguments }
 elseif (Get-Command py -ErrorAction SilentlyContinue) { & py -3 @arguments }
 else { & python @arguments }

@@ -166,7 +166,7 @@ The dataset is the reproducible evidence baseline, not a monolithic prompt. [`LL
 4. validates IDs and checksums;
 5. builds a bounded sandbox containing `evidence/`, `website/`, an input contract, and a writable `output/` directory.
 
-The same case can feed the compact multimodal API baseline or a read-only OpenCode/Claude Code adapter. Analysis outputs record both the `ux-task-trace` HF commit SHA and the website source commit SHA, then may be synchronized back under `analysis/<analysis-id>/` without altering the original attempt evidence.
+The same case can feed the Codex `evidence-only` or `source-explore` condition. Analysis outputs record both the `ux-task-trace` HF commit SHA and the website source commit SHA, then may be synchronized back under `analysis/<analysis-id>/` without altering the original attempt evidence.
 
 ## Configuration
 

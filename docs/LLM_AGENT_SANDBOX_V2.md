@@ -15,24 +15,24 @@ HF participant dataset or local participant folders
                 |
        materialize case sandbox
           /                 \
- compact API input      coding-agent tools
+ evidence-only         source-explore
 ```
 
 This makes local and downloaded cases use the same contract while keeping model prompts lean.
 
-## Two analysis modes
+## Two analysis conditions
 
-### Compact API baseline
+### Evidence-only baseline
 
-The current baseline remains useful for cheap, repeatable evaluation. It sends a compact trace, selected screenshots, and a bounded source excerpt to a multimodal API. Input v2 adds participant/run/assignment/attempt IDs and exact website provenance, but otherwise retains the current evidence-ID output rules.
+This condition sends compact case metadata, the full attempt trace, and selected key screenshots through Codex. Its temporary workspace does not contain `website/`, so source access is structurally impossible rather than discouraged only by the prompt.
 
-Use this mode first to establish latency, cost, and recommendation-quality baselines.
+Use this condition first to establish latency, cost, and UX-problem quality baselines.
 
-### Coding-agent sandbox
+### Source-explore condition
 
-OpenCode, Claude Code, or another coding agent receives a filesystem sandbox containing the complete website source plus the selected attempt evidence. It can search and inspect the repository, but the default recommendation task is read-only: it may write only its analysis output and must not edit the website.
+Codex receives a read-only filesystem sandbox containing the selected attempt evidence and the website application source. The task is diagnosis only: it reports UX problems encountered during the specific task and does not propose or apply code changes.
 
-Use this mode as the richer comparison condition when source exploration is expected to improve code-grounded recommendations. The agent is not given Hugging Face credentials or unrestricted network access.
+Use this condition to test whether source exploration improves evidence-grounded UX diagnosis. The agent is not given Hugging Face credentials or unrestricted network access.
 
 ## Case selection
 
@@ -72,17 +72,21 @@ The resolved source is checked against recorded metadata/checksums when availabl
     recording.webm
     snapshots/
   website/
-    ... exact source tree ...
+    ... application source from the exact revision ...
   contract/
     instructions.md
     finding.schema.json
   output/
-    findings.json
-    report.md
-    run-metadata.json
+    evidence-only/
+      findings.json
+      run-metadata.json
+    source-explore/
+      findings.json
+      run-metadata.json
+    comparison.json
 ```
 
-`website/` and `evidence/` are read-only. `output/` is the only writable directory. Dependency caches, `.git` credentials, environment secrets, HF tokens, and unrelated local files are not mounted.
+`website/` and `evidence/` are read-only. Agent instruction/config files such as `AGENTS.md`, `.codex/`, `.claude/`, and OpenCode configs are excluded while materializing application source. Dependency caches, `.git` credentials, environment secrets, HF tokens, and unrelated local files are not exposed to the analysis run.
 
 Video can be omitted with `--no-video` for agents that cannot inspect it or when download cost matters. Trace and referenced screenshots are required.
 
@@ -127,23 +131,23 @@ The agent instruction should stay short:
 1. Identify usability problems supported by the supplied attempt evidence.
 2. Separate observed behavior from inference.
 3. Cite existing event sequence numbers and snapshot IDs.
-4. Cite source paths only after inspecting them.
-5. Recommend changes; do not modify source or claim that a change was tested.
-6. Write the required JSON schema to `output/findings.json`.
+4. Explain how each observed problem impeded the specific task.
+5. Do not perform a generic heuristic audit or propose code/implementation changes.
+6. In source-explore mode, use source only to clarify observed behavior; do not report hypothetical source-only issues.
 
 Allowed tools are filesystem read, filename/text search, and optional non-mutating source inspection commands. Package installation, network calls, commits, uploads, and source writes are disabled for this analysis task.
 
 ## Output linkage
 
-`output/run-metadata.json` records:
+Each condition's `output/<condition>/run-metadata.json` records:
 
-- agent adapter and version;
+- Codex harness and version;
 - model name;
 - prompt/contract version;
 - dataset repo, revision, and HF commit SHA;
 - input attempt ID and artifact checksums;
 - resolved source commit SHA;
-- start/end time, exit status, and token/cost metrics when available.
+- start/end time, exit status, and process output needed for failure diagnosis.
 
 Validated outputs can be copied back under the attempt's `analysis/<analysis-id>/` directory and included in a later HF synchronization. Original evidence is never modified by analysis.
 
@@ -162,13 +166,13 @@ python scripts/materialize_case.py \
   --attempt-id att_01 \
   --output .cases/att_01
 
-# Run a configured read-only agent adapter.
+# Run both Codex comparison conditions.
 python scripts/run_agent_analysis.py \
   --case .cases/att_01 \
-  --adapter opencode
+  --condition both --model gpt-5.4
 ```
 
-The adapters require an installed/configured OpenCode or Claude CLI. The repository does not install either CLI or provide model credentials.
+The runner requires an already authenticated Codex CLI. It reuses saved Codex authentication directly and does not require an API proxy.
 
 ## Implementation layers
 
@@ -176,7 +180,7 @@ The adapters require an installed/configured OpenCode or Claude CLI. The reposit
 2. **Participant HF exporter (implemented):** accepted/audit export, checksums, indexes, revision selection, and sync state establish the dataset baseline.
 3. **Materializer (implemented):** the same sandbox can be built from local storage or an exact HF commit.
 4. **Compact API input v2 (implemented):** the existing multimodal input now carries stable IDs and website provenance.
-5. **Coding-agent adapters (implemented baseline):** OpenCode/Claude command adapters strip HF credentials and detect evidence/source mutations; actual network isolation remains a host/container responsibility.
+5. **Codex comparison harness (implemented):** evidence-only and source-explore runs share the same model, prompt contract, screenshot set, schema, and read-only Codex sandbox.
 6. **Output synchronization (future):** agent output is local today; attaching validated derived analysis to HF is not automatic.
 
 Do not begin with a general-purpose agent runner. The first three steps establish stable evidence and source resolution, which both API and coding-agent experiments require.
@@ -187,6 +191,6 @@ Do not begin with a general-purpose agent runner. The first three steps establis
 - Every evidence path and checksum is valid before agent launch.
 - The website source matches the exact recorded provenance.
 - The agent cannot write outside `output/` or access credentials/network by default.
-- Every finding cites real evidence IDs; every cited source path exists under `website/`.
+- Every finding cites real event or attached-screenshot evidence IDs.
 - Re-materializing the same dataset revision and attempt is deterministic.
 - Analysis output records both the evidence dataset commit and website source commit.

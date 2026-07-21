@@ -154,6 +154,13 @@ data/recordings/*
 exports/
 .cases/
 .case-cache/
+.local-tools/
+.tmp/
+.venv/
+.website-case-cache/
+.aris/
+reports/
+slides/
 .smoke-*/
 server/.next-smoke/
 scripts/trace-export.local.json
