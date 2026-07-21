@@ -48,7 +48,10 @@ For each task:
 2. Click **Begin Task** — Chrome navigates to the target website and starts recording
 3. Complete the task as described (or get as far as you can)
 4. Click the extension icon again and click **Done** to submit
-5. To skip a task, click **Skip** instead
+5. You'll see a feedback screen — note any usability problems you encountered (optional), then click **Continue** or **Skip**
+6. To skip a task entirely, click **Skip** instead of **Done**
+
+To start over at any time, click the **Reset** link in the top-right corner of the popup header.
 
 Repeat until all 10 tasks are complete.
 
@@ -126,6 +129,7 @@ The `results.json` file contains one entry per participant with an array of 10 t
         "timestamp": "2026-07-03T14:32:01.000Z",
         "view_start": "2026-07-03T14:30:15.000Z",
         "duration_ms": 106000,
+        "feedback": "Finding the date took a lot of clicks",
         "interactions": [
           {
             "kind": "click",
@@ -167,10 +171,8 @@ ui-rater-extension/
         └── upload-recording/  POST — receives video recordings
 
 └── data/                      All study output (send this folder back)
-    ├── results.json           Interaction traces
-    ├── recordings/            Task videos, e.g. P001_task1.webm
-    ├── trials-config.json     Task definitions
-    └── participants.json      Valid participant IDs
+    ├── results.json           Interaction traces + feedback
+    └── recordings/            Task videos, e.g. P001_task1.webm
 ```
 
 All processing happens locally. The only network traffic is between the participant's browser and the real websites they visit during tasks.
