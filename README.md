@@ -47,15 +47,29 @@ From the repository root:
 npm install
 ```
 
-Start the services in three terminals (use separate data roots):
+For normal local development, start all three services with the unified supervisor:
+
+```bash
+npm run dev:all
+```
+
+It starts Website, Collection, and Manager as three independent child processes, waits for all readiness endpoints, prefixes their logs, and stops the full group on `Ctrl+C` or if one service exits. The default owned roots are `data/website`, `data/collection`, and `data/manager`; set `UI_RATER_DEV_DATA_ROOT` to move the common parent, or set the three service-specific data-root variables individually.
+
+Inspect the resolved commands, URLs, and roots without starting anything:
+
+```bash
+npm run dev:all -- --print-config
+```
+
+Website, Collection, and Manager listen on `4173`, `3000`, and `4310` by default. The launcher is only a development supervisor: it does not merge service code, storage, or lifecycle state.
+
+To operate the services separately, use three terminals:
 
 ```bash
 WEBSITE_SERVICE_DATA_DIR="$PWD/data/website" npm run dev:website
 UI_RATER_DATA_DIR="$PWD/data/collection" npm --workspace server run dev
 MANAGER_DATA_DIR="$PWD/data/manager" npm run dev:manager
 ```
-
-Website, Collection, and Manager listen on `4173`, `3000`, and `4310` by default.
 
 ### 2. Load the Chrome extension
 

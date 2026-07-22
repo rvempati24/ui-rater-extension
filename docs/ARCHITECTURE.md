@@ -64,7 +64,7 @@ A Study Revision is copied into the Collection Service before participants start
 
 ## Run the three services locally
 
-The commands below use a POSIX shell and start each service in a separate terminal. Run them from the repository root.
+Run commands from the repository root. The recommended local entry point is a unified development supervisor; the services remain separate processes with separate storage ownership.
 
 ### 1. Install dependencies
 
@@ -83,6 +83,32 @@ export MANAGER_DATA_DIR=/absolute/path/to/ui-rater-data/manager
 ```
 
 Set these variables in the terminal that starts the corresponding service. Do not point two services at the same writable root.
+
+### Recommended: unified development supervisor
+
+```bash
+npm run dev:all
+```
+
+The supervisor starts Website, Collection, and Manager independently, prefixes each process's output, waits until all three `/api/v1/health/ready` endpoints succeed, and propagates shutdown when `Ctrl+C` is received or any child exits. Its default roots are:
+
+```text
+data/website
+data/collection
+data/manager
+```
+
+Override their common parent with `UI_RATER_DEV_DATA_ROOT`, or override `WEBSITE_SERVICE_DATA_DIR`, `UI_RATER_DATA_DIR`, and `MANAGER_DATA_DIR` separately. `WEBSITE_SERVICE_URL`, `COLLECTION_SERVICE_URL`, and `MANAGER_SERVICE_URL` override readiness/control URLs. To inspect the resolved topology without starting processes:
+
+```bash
+npm run dev:all -- --print-config
+```
+
+This launcher is deliberately outside every service boundary. It owns no domain data and performs no cross-service writes; it is a local process supervisor, not a fourth service or a return to the coupled launcher.
+
+### Alternative: start each service separately
+
+The commands below use a POSIX shell and three terminals.
 
 ### 2. Start Website Service
 
