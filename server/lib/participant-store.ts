@@ -3,14 +3,15 @@ import path from 'path';
 import crypto from 'crypto';
 import type { TrialConfigEntry, WebsiteMetadata } from '@/types';
 import { PARTICIPANT_DATA_DIR, SESSIONS_DIR } from './paths.ts';
+import { writeFileAtomic, writeJsonAtomic } from './atomic-file.ts';
+import { withFileLock } from './file-lock.ts';
 import {
   applyOutcomeTransition, isTerminalTask, nextAttemptNumber,
 } from './participant-state.ts';
 import type { AttemptOutcome, AttemptStatus, TaskStatus } from './participant-state.ts';
-import { assertSessionId } from './sessions.ts';
+import { assertSessionId, initializeSession } from './sessions.ts';
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const locks = new Map<string, Promise<void>>();
 
 export interface ParticipantRecord {
   schema_version: 2;
@@ -34,6 +35,7 @@ export interface RunRecord {
   website?: WebsiteMetadata;
   task_count: number;
   outcome_summary?: { completed: number; skipped: number; failed_no_retry: number };
+  creation_key?: string;
 }
 
 export interface TaskRecord {
@@ -90,11 +92,6 @@ function runDir(participantId: string, runId: string): string {
   return path.join(participantDir(participantId), 'runs', runId);
 }
 
-function taskDir(participantId: string, runId: string, position: number, assignmentId: string): string {
-  assertId(assignmentId, 'assignmentId');
-  return path.join(runDir(participantId, runId), 'tasks', `${String(position).padStart(3, '0')}-${assignmentId}`);
-}
-
 async function readJson<T>(file: string): Promise<T> {
   return JSON.parse(await fs.readFile(file, 'utf8')) as T;
 }
@@ -107,19 +104,8 @@ async function readJsonMaybe<T>(file: string): Promise<T | null> {
   }
 }
 
-async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  await fs.writeFile(temp, JSON.stringify(value, null, 2), 'utf8');
-  await fs.rename(temp, file);
-}
-
 function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const previous = locks.get(key) || Promise.resolve();
-  const next = previous.then(fn);
-  const settled = next.then(() => {}, () => {});
-  locks.set(key, settled);
-  return next.finally(() => { if (locks.get(key) === settled) locks.delete(key); });
+  return withFileLock(key, fn);
 }
 
 function newId(prefix: string): string {
@@ -129,7 +115,7 @@ function newId(prefix: string): string {
 async function taskEntries(participantId: string, runId: string): Promise<Array<{ dir: string; task: TaskRecord }>> {
   const root = path.join(runDir(participantId, runId), 'tasks');
   let names: string[] = [];
-  try { names = (await fs.readdir(root)).sort(); }
+  try { names = (await fs.readdir(root)).filter((name) => !name.startsWith('.')).sort(); }
   catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
@@ -152,14 +138,41 @@ async function taskEntries(participantId: string, runId: string): Promise<Array<
 export async function createRun(
   participantId: string,
   configs: TrialConfigEntry[],
-  website?: WebsiteMetadata
+  website?: WebsiteMetadata,
+  creationKey?: string
 ): Promise<{ participant: ParticipantRecord; run: RunRecord; tasks: TaskWithAttemptState[] }> {
   assertId(participantId, 'participantId');
   return withLock(`participant:${participantId}`, async () => {
     const now = new Date().toISOString();
     const participantFile = path.join(participantDir(participantId), 'participant.json');
     const existing = await readJsonMaybe<ParticipantRecord>(participantFile);
-    if (existing?.status === 'disabled') throw new Error('Participant is disabled');
+    if (existing?.status === 'disabled' || existing?.status === 'archived') {
+      throw new Error(`Participant is ${existing.status}`);
+    }
+    if (creationKey) {
+      assertId(creationKey, 'creationKey');
+      const prior = (await listRuns(participantId)).find((candidate) => candidate.creation_key === creationKey);
+      if (prior) {
+        const recovered = await getRun(participantId, prior.run_id);
+        if (!recovered) throw new Error('Idempotent run exists but is incomplete');
+        const repairedParticipant: ParticipantRecord = existing ? {
+          ...existing,
+          active_run_id: recovered.run.status === 'active'
+            ? recovered.run.run_id : existing.active_run_id,
+          updated_at: now,
+        } : {
+          schema_version: 2,
+          participant_id: participantId,
+          status: 'active',
+          active_run_id: recovered.run.status === 'active' ? recovered.run.run_id : undefined,
+          created_at: recovered.run.created_at || now,
+          updated_at: now,
+        };
+        await writeJsonAtomic(participantFile, repairedParticipant);
+        return { participant: repairedParticipant, run: recovered.run, tasks: recovered.tasks };
+      }
+    }
+    if (!configs.length) throw new Error('A run must contain at least one task');
     const runId = newId('run');
     const participant: ParticipantRecord = {
       schema_version: 2,
@@ -172,27 +185,42 @@ export async function createRun(
     const run: RunRecord = {
       schema_version: 2, run_id: runId, participant_id: participantId,
       status: 'active', created_at: now, website, task_count: configs.length,
+      creation_key: creationKey,
     };
-    await writeJsonAtomic(participantFile, participant);
-    await writeJsonAtomic(path.join(runDir(participantId, runId), 'run.json'), run);
+    const runsRoot = path.join(participantDir(participantId), 'runs');
+    const finalRunDir = path.join(runsRoot, runId);
+    const stagedRunDir = path.join(runsRoot, `.${runId}.staging-${crypto.randomUUID()}`);
     const tasks: TaskWithAttemptState[] = [];
-    for (let index = 0; index < configs.length; index += 1) {
-      const config = configs[index];
-      const sourcePosition = config.source_position;
-      const assignmentId = newId('asg');
-      const task: TaskRecord = {
-        schema_version: 2, assignment_id: assignmentId, run_id: runId,
-        participant_id: participantId, position: index + 1,
-        source_position: typeof sourcePosition === 'number'
-          && Number.isInteger(sourcePosition) && sourcePosition > 0
-          ? sourcePosition : index + 1,
-        task_prompt: config.task_prompt, site_url: config.site_url || '',
-        group: config.group, slug: config.slug,
-        app_id: config.plain_app,
-        status: 'pending',
-      };
-      await writeJsonAtomic(path.join(taskDir(participantId, runId, task.position, assignmentId), 'task.json'), task);
-      tasks.push({ ...task, attempt_count: 0 });
+    try {
+      await writeJsonAtomic(path.join(stagedRunDir, 'run.json'), run);
+      for (let index = 0; index < configs.length; index += 1) {
+        const config = configs[index];
+        const sourcePosition = config.source_position;
+        const assignmentId = newId('asg');
+        const task: TaskRecord = {
+          schema_version: 2, assignment_id: assignmentId, run_id: runId,
+          participant_id: participantId, position: index + 1,
+          source_position: typeof sourcePosition === 'number'
+            && Number.isInteger(sourcePosition) && sourcePosition > 0
+            ? sourcePosition : index + 1,
+          task_prompt: config.task_prompt, site_url: config.site_url || '',
+          group: config.group, slug: config.slug,
+          app_id: config.plain_app,
+          status: 'pending',
+        };
+        const stagedTask = path.join(
+          stagedRunDir, 'tasks', `${String(task.position).padStart(3, '0')}-${assignmentId}`, 'task.json'
+        );
+        await writeJsonAtomic(stagedTask, task);
+        tasks.push({ ...task, attempt_count: 0 });
+      }
+      await fs.mkdir(runsRoot, { recursive: true });
+      await fs.rename(stagedRunDir, finalRunDir);
+      // The participant pointer is the commit record and is intentionally written last.
+      await writeJsonAtomic(participantFile, participant);
+    } catch (error) {
+      await fs.rm(stagedRunDir, { recursive: true, force: true }).catch(() => {});
+      throw error;
     }
     return { participant, run, tasks };
   });
@@ -238,25 +266,52 @@ export async function createAttempt(input: {
     if (task.accepted_attempt_id) throw new Error('Task already has an accepted attempt');
     const root = path.join(dir, 'attempts');
     let names: string[] = [];
-    try { names = await fs.readdir(root); } catch { /* none */ }
+  try { names = (await fs.readdir(root)).filter((name) => !name.startsWith('.')); } catch { /* none */ }
     const existing = await Promise.all(names.map((name) =>
       readJsonMaybe<AttemptRecord>(path.join(root, name, 'attempt.json'))
     ));
     const sameSession = existing.find((attempt) => attempt?.session_id === input.sessionId);
-    if (sameSession) return sameSession;
+    if (sameSession) {
+      if (sameSession.status === 'recording') return sameSession;
+      throw new Error(`Session already belongs to terminal attempt ${sameSession.attempt_id}`);
+    }
     const active = existing.find((attempt) =>
       attempt?.status === 'recording' || attempt?.status === 'completed_pending_outcome'
       || (attempt?.status as string) === 'completed'
     );
     if (active) throw new Error(`Attempt ${active.attempt_id} still requires completion or outcome`);
     const nextNumber = nextAttemptNumber(existing);
-    const attempt: AttemptRecord = {
+    let attempt: AttemptRecord = {
       schema_version: 2, attempt_id: newId('att'), assignment_id: input.assignmentId,
       run_id: input.runId, participant_id: input.participantId,
       attempt_number: nextNumber, session_id: input.sessionId,
       status: 'recording', started_at: new Date().toISOString(),
       status_updated_at: new Date().toISOString(),
     };
+    const session = await initializeSession(input.sessionId, {
+      participant_id: input.participantId,
+      run_id: input.runId,
+      assignment_id: input.assignmentId,
+      attempt_id: attempt.attempt_id,
+      attempt_number: attempt.attempt_number,
+      attempt_status: 'recording',
+      task_status: 'pending',
+      trial_index: task.position,
+      task_prompt: task.task_prompt,
+      site_url: task.site_url,
+      website: run.website,
+    });
+    if (session.status !== 'recording'
+        || (session.attempt_status && session.attempt_status !== 'recording')) {
+      throw new Error('Session already contains terminal evidence and cannot create an attempt');
+    }
+    if (session.attempt_id && session.attempt_id !== attempt.attempt_id) {
+      attempt = {
+        ...attempt,
+        attempt_id: session.attempt_id,
+        attempt_number: session.attempt_number || attempt.attempt_number,
+      };
+    }
     const dirName = `${String(attempt.attempt_number).padStart(3, '0')}-${attempt.attempt_id}`;
     await writeJsonAtomic(path.join(root, dirName, 'attempt.json'), attempt);
     return attempt;
@@ -491,14 +546,14 @@ export async function saveAttemptRecording(input: {
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
-    await fs.writeFile(file, input.data, { flag: 'wx' });
+    await writeFileAtomic(file, input.data);
     return file;
   });
 }
 
 export async function listParticipants(): Promise<ParticipantRecord[]> {
   let names: string[] = [];
-  try { names = await fs.readdir(PARTICIPANT_DATA_DIR); } catch { return []; }
+  try { names = (await fs.readdir(PARTICIPANT_DATA_DIR)).filter((name) => !name.startsWith('.')); } catch { return []; }
   const records = await Promise.all(names.sort().map((name) =>
     readJsonMaybe<ParticipantRecord>(path.join(PARTICIPANT_DATA_DIR, name, 'participant.json'))
   ));
@@ -508,7 +563,7 @@ export async function listParticipants(): Promise<ParticipantRecord[]> {
 export async function listRuns(participantId: string): Promise<RunRecord[]> {
   const root = path.join(participantDir(participantId), 'runs');
   let names: string[] = [];
-  try { names = await fs.readdir(root); } catch { return []; }
+  try { names = (await fs.readdir(root)).filter((name) => !name.startsWith('.')); } catch { return []; }
   const records = await Promise.all(names.sort().map((name) =>
     readJsonMaybe<RunRecord>(path.join(root, name, 'run.json'))
   ));

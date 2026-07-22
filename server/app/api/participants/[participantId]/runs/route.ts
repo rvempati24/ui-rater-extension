@@ -5,11 +5,15 @@ import { getActiveWebsiteMetadata } from '@/lib/website-metadata';
 import { createRun, listRuns } from '@/lib/participant-store';
 import { withResultsLock } from '@/lib/results';
 import { generateTrials } from '@/lib/trials';
+import { capabilityFor } from '@/lib/capabilities';
+import { requireLocalAdmin } from '@/lib/admin-auth';
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   context: { params: Promise<{ participantId: string }> }
 ) {
+  const denied = requireLocalAdmin(req);
+  if (denied) return denied;
   const { participantId } = await context.params;
   try { return NextResponse.json({ runs: await listRuns(participantId) }); }
   catch (error: unknown) {
@@ -18,7 +22,7 @@ export async function GET(
 }
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   context: { params: Promise<{ participantId: string }> }
 ) {
   const { participantId } = await context.params;
@@ -27,12 +31,21 @@ export async function POST(
   }
   try {
     const configs = await getTrialConfigs();
-    const created = await createRun(participantId, configs, await getActiveWebsiteMetadata());
+    const creationKey = req.headers.get('idempotency-key') || undefined;
+    if (!creationKey) {
+      return NextResponse.json({ error: 'Idempotency-Key is required' }, { status: 400 });
+    }
+    const created = await createRun(
+      participantId, configs, await getActiveWebsiteMetadata(), creationKey
+    );
     await withResultsLock(async (data) => {
+      if (data[participantId]?.run_id === created.run.run_id
+          && data[participantId].trials?.length) return;
       data[participantId] = { run_id: created.run.run_id, trials: generateTrials(configs) };
     });
     return NextResponse.json({
       runId: created.run.run_id, runStatus: created.run.status,
+      runCapability: await capabilityFor('run', created.run.run_id),
       tasks: created.tasks, currentTaskIndex: 0, totalTasks: created.tasks.length,
     }, { status: 201 });
   } catch (error: unknown) {

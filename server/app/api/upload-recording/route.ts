@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { RECORDINGS_DIR } from '@/lib/paths';
 import { saveAttemptRecording } from '@/lib/participant-store';
+import { requireCapability } from '@/lib/capabilities';
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -18,6 +19,11 @@ async function writeCompatibilityRecording(file: string, data: Buffer): Promise<
 }
 
 export async function POST(req: NextRequest) {
+  const maximumRecordingBytes = 1024 * 1024 * 1024;
+  const declaredLength = Number(req.headers.get('content-length') || 0);
+  if (declaredLength > maximumRecordingBytes) {
+    return NextResponse.json({ error: 'Recording exceeds 1 GB' }, { status: 413 });
+  }
   const participantId = req.nextUrl.searchParams.get('participantId');
   const taskIndex = req.nextUrl.searchParams.get('taskIndex');
   const runId = req.nextUrl.searchParams.get('runId');
@@ -32,16 +38,35 @@ export async function POST(req: NextRequest) {
   if (hasManagedIds && !managedIds.every((value) => value && SAFE_ID.test(value))) {
     return NextResponse.json({ error: 'Invalid or incomplete run/assignment/attempt IDs' }, { status: 400 });
   }
+  if (!hasManagedIds && process.env.NODE_ENV === 'production') {
+    return NextResponse.json({ error: 'Managed attempt IDs are required' }, { status: 403 });
+  }
 
   const buffer = Buffer.from(await req.arrayBuffer());
+  if (buffer.length > maximumRecordingBytes) {
+    return NextResponse.json({ error: 'Recording exceeds 1 GB' }, { status: 413 });
+  }
   if (buffer.length === 0) {
     return NextResponse.json({ error: 'Recording is empty' }, { status: 400 });
   }
 
   if (hasManagedIds) {
-    await saveAttemptRecording({
-      participantId, runId: runId!, assignmentId: assignmentId!, attemptId: attemptId!, data: buffer,
-    });
+    try {
+      await requireCapability(req, 'attempt', attemptId!);
+    } catch (error: unknown) {
+      return NextResponse.json({
+        error: error instanceof Error ? error.message : 'Recording authorization failed',
+      }, { status: 401 });
+    }
+    try {
+      await saveAttemptRecording({
+        participantId, runId: runId!, assignmentId: assignmentId!, attemptId: attemptId!, data: buffer,
+      });
+    } catch (error: unknown) {
+      return NextResponse.json({
+        error: error instanceof Error ? error.message : 'Recording save failed',
+      }, { status: 409 });
+    }
   }
 
   await fs.mkdir(RECORDINGS_DIR, { recursive: true });

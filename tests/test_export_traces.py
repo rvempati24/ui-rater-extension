@@ -71,6 +71,7 @@ class ExportTraceTests(unittest.TestCase):
             __import__("shutil").copytree(attempt, duplicate)
             metadata = json.loads((duplicate / "attempt.json").read_text())
             metadata["attempt_id"] = "att_002"
+            metadata["attempt_number"] = 2
             write_json(duplicate / "attempt.json", metadata)
             with self.assertRaisesRegex(ValueError, "multiple accepted"):
                 export_traces.copy_participant_export(participants, root / "duplicate")
@@ -85,6 +86,13 @@ class ExportTraceTests(unittest.TestCase):
             self.assertTrue((target / "trace.json").exists())
             self.assertEqual(rows[0]["artifact_path"], target.relative_to(destination).as_posix())
             self.assertIn("recording.webm", rows[0]["artifact_checksums"])
+            self.assertTrue(rows[0]["artifact_root_sha256"])
+            artifact_manifest = json.loads((target / "artifact-manifest.json").read_text())
+            self.assertEqual(artifact_manifest["root_sha256"], rows[0]["artifact_root_sha256"])
+            self.assertFalse(any(
+                record["path"] == "artifact-manifest.json"
+                for record in artifact_manifest["files"]
+            ))
             self.assertEqual(rows[0]["task_source_position"], 5)
             self.assertEqual(len((destination / "index/attempts.jsonl").read_text().splitlines()), 1)
 
@@ -130,6 +138,22 @@ class ExportTraceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "recording.webm"):
                 export_traces.copy_participant_export(participants, root / "export")
 
+    def test_orphan_snapshot_and_mismatched_directory_identity_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            participants, attempt = make_attempt(root)
+            (attempt / "snapshots/s0002.jpg").write_bytes(b"orphan")
+            with self.assertRaisesRegex(ValueError, "incomplete snapshot pair"):
+                export_traces.copy_participant_export(participants, root / "orphan")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            participants, attempt = make_attempt(root)
+            wrong = attempt.with_name("999-att_001")
+            attempt.rename(wrong)
+            with self.assertRaisesRegex(ValueError, "directory does not match attempt"):
+                export_traces.copy_participant_export(participants, root / "wrong-name")
+
     def test_refuses_overlapping_or_unmarked_destination(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -164,6 +188,14 @@ class ExportTraceTests(unittest.TestCase):
             {"attempt_id": "att_002"},
             {"attempt_id": "att_003"},
         ])
+
+    def test_incremental_merge_rejects_changed_immutable_attempt_evidence(self):
+        remote = [{"attempt_id": "att_001", "artifact_root_sha256": "old"}]
+        local = [{"attempt_id": "att_001", "artifact_root_sha256": "new"}]
+        with self.assertRaisesRegex(ValueError, "different evidence"):
+            export_traces.merge_rows(
+                remote, local, "attempt_id", "artifact_root_sha256"
+            )
 
 
 if __name__ == "__main__":

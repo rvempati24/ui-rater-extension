@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { recordAttemptOutcome } from '@/lib/attempt-outcomes';
 import type { AttemptOutcome } from '@/lib/participant-state';
+import { requireCapability } from '@/lib/capabilities';
 
 const OUTCOMES = new Set<AttemptOutcome>([
   'succeeded', 'failed_retry', 'failed_no_retry', 'skipped', 'recording_problem',
@@ -19,6 +20,7 @@ export async function POST(
     return NextResponse.json({ error: 'Missing IDs or invalid outcome' }, { status: 400 });
   }
   try {
+    await requireCapability(req, 'attempt', attemptId);
     const result = await recordAttemptOutcome({
       participantId: body.participantId,
       runId: body.runId,

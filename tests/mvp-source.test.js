@@ -5,13 +5,27 @@ const path = require('node:path');
 
 const root = path.join(__dirname, '..');
 
-test('active trace is persisted and restored through chrome.storage.local', () => {
+test('active trace resumes only through a tab-owned background handshake', () => {
   const background = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
   const content = fs.readFileSync(path.join(root, 'content.js'), 'utf8');
   assert.match(background, /ACTIVE_SESSION_KEY/);
   assert.match(background, /chrome\.storage\.local\.set\(\{ \[ACTIVE_SESSION_KEY\]: session \}\)/);
-  assert.match(content, /_sessionId/);
-  assert.match(content, /if \(data\._tracking\) startTracking/);
+  assert.match(content, /type: 'RESUME_TRACKING'/);
+  assert.doesNotMatch(content, /if \(data\._tracking\) startTracking/);
+  assert.match(background, /sender\.tab\?\.id === session\.taskTabId/);
+  assert.match(background, /phase === 'recording'/);
+  assert.match(background, /installNavigationBridge\(session\.taskTabId\)/);
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.content_scripts.length, 1);
+  assert.deepEqual(manifest.content_scripts[0].js, ['content.js']);
+});
+
+test('content trace flushes are serialized and failed batches retain order', () => {
+  const content = fs.readFileSync(path.join(root, 'content.js'), 'utf8');
+  assert.match(content, /let flushLock = Promise\.resolve\(\)/);
+  assert.match(content, /const next = flushLock\.then\(flush, flush\)/);
+  assert.match(content, /interactions = \[\.\.\.batch, \.\.\.interactions\]/);
+  assert.match(content, /attachListeners\(\);[\s\S]*saveInterval = setInterval/);
 });
 
 test('server protects completed sessions from delayed partial saves', () => {
@@ -19,9 +33,11 @@ test('server protects completed sessions from delayed partial saves', () => {
     root, 'server', 'app', 'api', 'partial-save', 'route.ts'
   ), 'utf8');
   const sessions = fs.readFileSync(path.join(root, 'server', 'lib', 'sessions.ts'), 'utf8');
-  assert.match(partialRoute, /if \(trial\.completed\) return/);
-  assert.match(sessions, /current\.status === 'complete'/);
-  assert.match(sessions, /interactions\.length >= current\.interactions\.length/);
+  assert.match(partialRoute, /canonical\.attempt\.status !== 'recording'/);
+  assert.match(partialRoute, /ignored: 'attempt_finalized'/);
+  assert.match(sessions, /manifest\.status === 'complete'/);
+  assert.match(sessions, /processed_batch_ids/);
+  assert.match(sessions, /new Set\(current\.interactions\.map\(\(event\) => event\.event_id\)/);
 });
 
 test('new trials retain the configured site URL for analysis context', () => {
@@ -38,9 +54,9 @@ test('important actions receive paired snapshots with a high safety guard', () =
   assert.match(background, /msg\.phase === 'before' \|\| msg\.phase === 'after'/);
   assert.match(content, /crypto\.randomUUID\(\)/);
   assert.doesNotMatch(content, /actionCounter/);
-  assert.match(content, /requestSnapshot\('before-activate'/);
+  assert.match(content, /requestSnapshotWithFailureRecord\('before-activate'/);
   assert.match(content, /'after-click'/);
-  assert.match(content, /requestSnapshot\('before-edit'/);
+  assert.match(content, /requestSnapshotWithFailureRecord\('before-edit'/);
   assert.match(content, /'after-edit'/);
   assert.match(content, /'after-scroll'/);
   assert.match(content, /record\('snapshot-skipped'/);
@@ -48,7 +64,7 @@ test('important actions receive paired snapshots with a high safety guard', () =
   assert.match(background, /phase: msg\.phase/);
   assert.match(background, /timingGuarantee: msg\.phase === 'before' \? 'best-effort-before'/);
   assert.match(background, /ts: capturedTs/);
-  assert.match(background, /api\/sessions\/\$\{session\.sessionId\}\/snapshot/);
+  assert.match(background, /api\/sessions\/\$\{record\.sessionId\}\/snapshot/);
   assert.match(
     content,
     /await flushToBackground\(\);[\s\S]*await requestSnapshot\('task-end',[\s\S]*tracking = false;/,
@@ -56,10 +72,14 @@ test('important actions receive paired snapshots with a high safety guard', () =
   );
 });
 
-test('analysis and export entrypoints exist without automatic external writes', () => {
+test('the server analyzer is retired in favor of the controlled experiment entrypoint', () => {
   assert.ok(fs.existsSync(path.join(root, 'server', 'app', 'api', 'sessions', '[sessionId]', 'analyze', 'route.ts')));
-  assert.ok(fs.existsSync(path.join(root, 'server', 'lib', 'ux-analysis', 'source-context.ts')));
-  assert.ok(fs.existsSync(path.join(root, 'server', 'lib', 'ux-analysis', 'openai.ts')));
+  const route = fs.readFileSync(path.join(
+    root, 'server', 'app', 'api', 'sessions', '[sessionId]', 'analyze', 'route.ts'
+  ), 'utf8');
+  assert.match(route, /status: 410/);
+  assert.match(route, /run-ux-experiment\.sh/);
+  assert.ok(fs.existsSync(path.join(root, 'scripts', 'run_ux_experiment.py')));
   const exportConfig = JSON.parse(fs.readFileSync(
     path.join(root, 'scripts', 'trace-export.example.json'), 'utf8'
   ));
@@ -67,22 +87,21 @@ test('analysis and export entrypoints exist without automatic external writes', 
   assert.equal(exportConfig.hf_repo_id, 'uxBench/ux-task-trace');
 });
 
-test('analysis input preserves every captured screenshot', () => {
-  const analysisInput = fs.readFileSync(
-    path.join(root, 'server', 'lib', 'ux-analysis', 'input.ts'), 'utf8'
-  );
-  assert.match(analysisInput, /snapshots:\s*session\.snapshots,/);
-  assert.doesNotMatch(analysisInput, /session\.snapshots\.slice\(/);
+test('Method 1 exposes all screenshots for agent selection without pre-attaching them', () => {
+  const runner = fs.readFileSync(path.join(root, 'scripts', 'run_agent_analysis.py'), 'utf8');
+  assert.match(runner, /agent-selective/);
+  assert.match(runner, /workspace \/ "screenshots"/);
+  assert.doesNotMatch(runner, /command\.extend\(\["-i"/);
 });
 
-test('server analysis uses the same problem-only finding contract', () => {
-  const prompt = fs.readFileSync(
-    path.join(root, 'server', 'lib', 'ux-analysis', 'prompt.ts'), 'utf8'
-  );
-  assert.match(prompt, /ux_problem/);
-  assert.match(prompt, /task_impact/);
-  assert.doesNotMatch(prompt, /recommendation:/);
-  assert.doesNotMatch(prompt, /source_candidates/);
+test('Methods 1 and 3 share the problem-only contract', () => {
+  const materializer = fs.readFileSync(path.join(root, 'scripts', 'materialize_case.py'), 'utf8');
+  const experiment = fs.readFileSync(path.join(root, 'scripts', 'run_ux_experiment.py'), 'utf8');
+  assert.match(materializer, /ux_problem/);
+  assert.match(materializer, /task_impact/);
+  assert.match(materializer, /Do not propose code changes or implementation fixes/);
+  assert.match(experiment, /"1"[\s\S]*"primary": True/);
+  assert.match(experiment, /"3"[\s\S]*"primary": True/);
 });
 
 test('completed sessions retain website provenance and attempt metadata', () => {
@@ -95,10 +114,9 @@ test('completed sessions retain website provenance and attempt metadata', () => 
   const metadata = fs.readFileSync(path.join(
     root, 'server', 'lib', 'website-metadata.ts'
   ), 'utf8');
-  assert.match(completeRoute, /getActiveWebsiteMetadata/);
+  assert.match(completeRoute, /const website = managedRun\?\.run\.website/);
   assert.match(completeRoute, /attempt_id:/);
   assert.match(launcher, /UI_RATER_WEBSITE_METADATA_FILE/);
-  assert.match(launcher, /UI_RATER_WEBSITE_SOURCE_DIR/);
   assert.match(launcher, /UI_RATER_WEBSITE_RUN_ID/);
   assert.match(metadata, /delete portable\.source_dir/);
 });
@@ -154,9 +172,9 @@ test('duplicate complete and delayed partial requests cannot rewrite finalized p
   const partialRoute = fs.readFileSync(path.join(
     root, 'server', 'app', 'api', 'partial-save', 'route.ts'
   ), 'utf8');
-  const completeGuard = completeRoute.indexOf("canonical.attempt.status !== 'recording'");
-  assert.ok(completeGuard >= 0);
-  assert.ok(completeGuard < completeRoute.indexOf('await saveSessionTrace'));
+  const sessions = fs.readFileSync(path.join(root, 'server', 'lib', 'sessions.ts'), 'utf8');
+  assert.match(completeRoute, /await completeAttemptEvidence/);
+  assert.match(sessions, /manifest\.status === 'complete'[\s\S]*current\.interactions/);
   assert.match(partialRoute, /canonical\.attempt\.status !== 'recording'/);
   assert.match(partialRoute, /ignored: 'attempt_finalized'/);
 });
@@ -168,6 +186,14 @@ test('task loading repairs a legacy results projection left on another run', () 
   assert.match(tasksRoute, /existingResults\?\.run_id !== managed\.run\.run_id/);
   assert.match(tasksRoute, /current\?\.run_id === managed\.run\.run_id/);
   assert.match(tasksRoute, /run_id: managed\.run\.run_id/);
+});
+
+test('idempotent run creation preserves an existing compatibility projection', () => {
+  const route = fs.readFileSync(path.join(
+    root, 'server', 'app', 'api', 'participants', '[participantId]', 'runs', 'route.ts'
+  ), 'utf8');
+  assert.match(route, /data\[participantId\]\?\.run_id === created\.run\.run_id/);
+  assert.match(route, /data\[participantId\]\.trials\?\.length/);
 });
 
 test('task launcher auto-closes only after the run-completion marker is written', () => {

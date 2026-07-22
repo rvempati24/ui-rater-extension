@@ -33,6 +33,8 @@ test('popup supports participant runs and explicit task outcomes', () => {
   assert.match(html, /Do Not Retry/);
   assert.match(html, /Mark Recording Problem/);
   assert.match(source, /finalFlushStatus = 'unavailable'/);
+  assert.match(source, /finalizationReport: savedTiming\?\.finalizationReport/);
+  assert.match(source, /!finalizationResponse && stored\._taskTabId/);
 });
 
 test('popup restores both post-recording decision phases', () => {

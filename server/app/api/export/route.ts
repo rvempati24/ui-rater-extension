@@ -1,8 +1,11 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs/promises';
 import { RESULTS_PATH } from '@/lib/paths';
+import { requireLocalAdmin } from '@/lib/admin-auth';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const denied = requireLocalAdmin(req);
+  if (denied) return denied;
   try {
     const raw = await fs.readFile(RESULTS_PATH, 'utf-8');
     const all = JSON.parse(raw) as Record<string, Record<string, unknown>>;

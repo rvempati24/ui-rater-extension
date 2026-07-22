@@ -2,9 +2,16 @@ import fs from 'fs/promises';
 import path from 'path';
 import type { InteractionEvent, SessionManifest, SnapshotMetadata } from '@/types';
 import { SESSIONS_DIR } from './paths.ts';
+import { writeFileAtomic, writeJsonAtomic } from './atomic-file.ts';
+import { withFileLock } from './file-lock.ts';
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SNAPSHOT_ID = /^s\d{4}$/;
+const MAX_SNAPSHOTS = 240;
+const MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024;
+const MAX_SESSION_SNAPSHOT_BYTES = 512 * 1024 * 1024;
+const MAX_TRACE_EVENTS = 100_000;
+const MAX_BATCH_EVENTS = 2_000;
 
 export function assertSessionId(sessionId: string): void {
   if (!SESSION_ID.test(sessionId)) throw new Error('Invalid sessionId');
@@ -24,23 +31,9 @@ async function readJson<T>(file: string, fallback: T): Promise<T> {
   }
 }
 
-async function writeJson(file: string, value: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  await fs.writeFile(temp, JSON.stringify(value, null, 2), 'utf8');
-  await fs.rename(temp, file);
-}
-
-const sessionLocks = new Map<string, Promise<void>>();
-
 function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
-  const previous = sessionLocks.get(sessionId) || Promise.resolve();
-  const next = previous.then(fn);
-  const settled = next.then(() => {}, () => {});
-  sessionLocks.set(sessionId, settled);
-  return next.finally(() => {
-    if (sessionLocks.get(sessionId) === settled) sessionLocks.delete(sessionId);
-  });
+  assertSessionId(sessionId);
+  return withFileLock(`session:${sessionId}`, fn);
 }
 
 async function updateManifestUnlocked(
@@ -49,11 +42,8 @@ async function updateManifestUnlocked(
 ): Promise<SessionManifest> {
   const dir = getSessionDir(sessionId);
   const file = path.join(dir, 'manifest.json');
-  const current = await readJson<SessionManifest>(file, {
-    schema_version: 1,
-    session_id: sessionId,
-    status: 'recording',
-  });
+  const current = await readJson<SessionManifest | null>(file, null);
+  if (!current) throw new Error('Unknown session');
   const safePatch: Partial<SessionManifest> = { ...patch };
   if (current.status === 'complete' && patch.status === 'recording') {
     safePatch.status = 'complete';
@@ -67,11 +57,38 @@ async function updateManifestUnlocked(
     ...current,
     ...safePatch,
     interaction_count: Math.max(current.interaction_count || 0, safePatch.interaction_count || 0),
-    schema_version: 1,
+    schema_version: current.schema_version === 2 ? 2 : 1,
     session_id: sessionId,
   };
-  await writeJson(file, next);
+  await writeJsonAtomic(file, next);
   return next;
+}
+
+async function reconcileSnapshotManifestUnlocked(
+  sessionId: string, manifest: SessionManifest, snapshotDir: string
+): Promise<SessionManifest> {
+  const names = (await fs.readdir(snapshotDir)).filter((name) => name.endsWith('.json')).sort();
+  let snapshotBytes = 0;
+  for (const name of names) {
+    const snapshotId = name.slice(0, -5);
+    const image = path.join(snapshotDir, `${snapshotId}.jpg`);
+    const stat = await fs.stat(image).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!stat?.isFile()) throw new Error(`Snapshot ${snapshotId} metadata has no JPEG`);
+    snapshotBytes += stat.size;
+  }
+  if (snapshotBytes > MAX_SESSION_SNAPSHOT_BYTES) {
+    throw new Error('Session exceeds the screenshot storage quota');
+  }
+  if (manifest.snapshot_count === names.length && manifest.snapshot_bytes === snapshotBytes) {
+    return manifest;
+  }
+  return updateManifestUnlocked(sessionId, {
+    snapshot_count: names.length,
+    snapshot_bytes: snapshotBytes,
+  });
 }
 
 export async function updateManifest(
@@ -81,6 +98,96 @@ export async function updateManifest(
   return withSessionLock(sessionId, () => updateManifestUnlocked(sessionId, patch));
 }
 
+export async function initializeSession(
+  sessionId: string,
+  manifest: Omit<SessionManifest, 'schema_version' | 'session_id' | 'status'>
+): Promise<SessionManifest> {
+  return withSessionLock(sessionId, async () => {
+    const file = path.join(getSessionDir(sessionId), 'manifest.json');
+    const current = await readJson<SessionManifest | null>(file, null);
+    if (current) {
+      for (const key of ['participant_id', 'run_id', 'assignment_id'] as const) {
+        if (manifest[key] && current[key] && current[key] !== manifest[key]) {
+          throw new Error('Session ownership mismatch');
+        }
+      }
+      const enriched = { ...manifest, ...current };
+      await writeJsonAtomic(file, enriched);
+      return enriched;
+    }
+    const created: SessionManifest = {
+      ...manifest,
+      schema_version: 2,
+      session_id: sessionId,
+      status: 'recording',
+      interaction_count: 0,
+      snapshot_count: 0,
+      snapshot_bytes: 0,
+      processed_batch_ids: [],
+    };
+    await writeJsonAtomic(file, created);
+    await writeJsonAtomic(path.join(getSessionDir(sessionId), 'trace.json'), {
+      schema_version: 2, session_id: sessionId, interactions: [],
+    });
+    return created;
+  });
+}
+
+export async function appendSessionTraceBatch(
+  sessionId: string,
+  batchId: string,
+  events: InteractionEvent[],
+  metadata: Partial<SessionManifest> = {}
+): Promise<{ interactionCount: number; appended: number; replayed: boolean }> {
+  if (typeof batchId !== 'string' || batchId.length < 8 || batchId.length > 240) {
+    throw new Error('Invalid trace batchId');
+  }
+  if (!Array.isArray(events) || events.length > MAX_BATCH_EVENTS) {
+    throw new Error(`A trace batch may contain at most ${MAX_BATCH_EVENTS} events`);
+  }
+  return withSessionLock(sessionId, async () => {
+    const dir = getSessionDir(sessionId);
+    const manifest = await readJson<SessionManifest | null>(path.join(dir, 'manifest.json'), null);
+    if (!manifest) throw new Error('Unknown session');
+    if (manifest.status === 'complete') {
+      return { interactionCount: manifest.interaction_count || 0, appended: 0, replayed: true };
+    }
+    const processed = new Set(manifest.processed_batch_ids || []);
+    if (processed.has(batchId)) {
+      return { interactionCount: manifest.interaction_count || 0, appended: 0, replayed: true };
+    }
+    const traceFile = path.join(dir, 'trace.json');
+    const current = await readJson<{ interactions: InteractionEvent[] }>(traceFile, { interactions: [] });
+    const known = new Set(current.interactions.map((event) => event.event_id).filter(Boolean));
+    let nextSeq = current.interactions.reduce((value, event) => Math.max(value, event.seq || 0), 0) + 1;
+    const appended: InteractionEvent[] = [];
+    for (let index = 0; index < events.length; index += 1) {
+      const input = events[index];
+      if (!input || typeof input !== 'object' || typeof input.kind !== 'string'
+        || typeof input.ts !== 'number' || !Number.isFinite(input.ts)) {
+        throw new Error(`Invalid trace event at batch position ${index}`);
+      }
+      const eventId = typeof input.event_id === 'string' && input.event_id.length <= 200
+        ? input.event_id : `${batchId}:${index}`;
+      if (known.has(eventId)) continue;
+      known.add(eventId);
+      appended.push({ ...input, event_id: eventId, seq: nextSeq++ });
+    }
+    const interactions = [...current.interactions, ...appended];
+    if (interactions.length > MAX_TRACE_EVENTS) throw new Error('Session trace exceeds the event quota');
+    await writeJsonAtomic(traceFile, {
+      schema_version: 2, session_id: sessionId, interactions,
+    });
+    processed.add(batchId);
+    await updateManifestUnlocked(sessionId, {
+      ...metadata,
+      interaction_count: interactions.length,
+      processed_batch_ids: [...processed].slice(-2_000),
+    });
+    return { interactionCount: interactions.length, appended: appended.length, replayed: false };
+  });
+}
+
 export async function saveSessionTrace(
   sessionId: string,
   interactions: InteractionEvent[],
@@ -88,9 +195,8 @@ export async function saveSessionTrace(
 ): Promise<void> {
   await withSessionLock(sessionId, async () => {
     const dir = getSessionDir(sessionId);
-    const manifest = await readJson<SessionManifest>(path.join(dir, 'manifest.json'), {
-      schema_version: 1, session_id: sessionId, status: 'recording',
-    });
+    const manifest = await readJson<SessionManifest | null>(path.join(dir, 'manifest.json'), null);
+    if (!manifest) throw new Error('Unknown session');
     if (manifest.status === 'complete' && metadata.status === 'recording') return;
     const traceFile = path.join(dir, 'trace.json');
     const current = await readJson<{ interactions: InteractionEvent[] }>(
@@ -101,8 +207,8 @@ export async function saveSessionTrace(
       : interactions.length >= current.interactions.length
       ? interactions
       : current.interactions;
-    await writeJson(traceFile, {
-      schema_version: 1,
+    await writeJsonAtomic(traceFile, {
+      schema_version: 2,
       session_id: sessionId,
       interactions: nextInteractions,
     });
@@ -116,7 +222,8 @@ export async function saveSessionTrace(
 export async function saveSnapshot(
   sessionId: string,
   input: {
-    snapshotId: string;
+    snapshotId?: string;
+    captureRequestId?: string;
     imageDataUrl: string;
     reason?: string;
     actionId?: string;
@@ -134,18 +241,44 @@ export async function saveSnapshot(
     elements?: Array<Record<string, unknown>>;
   }
 ): Promise<SnapshotMetadata> {
-  if (!SNAPSHOT_ID.test(input.snapshotId)) throw new Error('Invalid snapshotId');
+  if (input.snapshotId && !SNAPSHOT_ID.test(input.snapshotId)) throw new Error('Invalid snapshotId');
+  if (input.captureRequestId && (input.captureRequestId.length < 8 || input.captureRequestId.length > 240)) {
+    throw new Error('Invalid captureRequestId');
+  }
   const match = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(input.imageDataUrl);
   if (!match) throw new Error('Snapshot must be a JPEG data URL');
   const image = Buffer.from(match[1], 'base64');
-  if (image.length > 5 * 1024 * 1024) throw new Error('Snapshot exceeds 5 MB');
+  if (image.length > MAX_SNAPSHOT_BYTES) throw new Error('Snapshot exceeds 5 MB');
 
   return withSessionLock(sessionId, async () => {
-    const snapshotDir = path.join(getSessionDir(sessionId), 'snapshots');
+    const sessionDir = getSessionDir(sessionId);
+    const manifestFile = path.join(sessionDir, 'manifest.json');
+    let manifest = await readJson<SessionManifest | null>(manifestFile, null);
+    if (!manifest) throw new Error('Unknown session');
+    const snapshotDir = path.join(sessionDir, 'snapshots');
     await fs.mkdir(snapshotDir, { recursive: true });
-    const imageFile = `${input.snapshotId}.jpg`;
+    manifest = await reconcileSnapshotManifestUnlocked(sessionId, manifest, snapshotDir);
+    const metadataNames = (await fs.readdir(snapshotDir)).filter((name) => name.endsWith('.json')).sort();
+    for (const name of metadataNames) {
+      const existing = await readJson<SnapshotMetadata | null>(path.join(snapshotDir, name), null);
+      if (input.captureRequestId && existing?.capture_request_id === input.captureRequestId) {
+        await reconcileSnapshotManifestUnlocked(sessionId, manifest, snapshotDir);
+        return existing;
+      }
+    }
+    if (metadataNames.length >= MAX_SNAPSHOTS) throw new Error(`Session exceeds ${MAX_SNAPSHOTS} snapshots`);
+    if ((manifest.snapshot_bytes || 0) + image.length > MAX_SESSION_SNAPSHOT_BYTES) {
+      throw new Error('Session exceeds the screenshot storage quota');
+    }
+    const nextNumber = metadataNames.reduce((value, name) => {
+      const match = /^s(\d{4})\.json$/.exec(name);
+      return Math.max(value, match ? Number(match[1]) : 0);
+    }, 0) + 1;
+    const snapshotId = input.snapshotId || `s${String(nextNumber).padStart(4, '0')}`;
+    const imageFile = `${snapshotId}.jpg`;
     const metadata: SnapshotMetadata = {
-      snapshot_id: input.snapshotId,
+      snapshot_id: snapshotId,
+      capture_request_id: input.captureRequestId,
       reason: input.reason || 'state-change',
       action_id: typeof input.actionId === 'string' ? input.actionId.slice(0, 80) : undefined,
       phase: input.phase === 'before' || input.phase === 'after' ? input.phase : undefined,
@@ -167,7 +300,7 @@ export async function saveSnapshot(
       image_file: `snapshots/${imageFile}`,
     };
     const imagePath = path.join(snapshotDir, imageFile);
-    const metadataPath = path.join(snapshotDir, `${input.snapshotId}.json`);
+    const metadataPath = path.join(snapshotDir, `${snapshotId}.json`);
     const [existingImage, existingMetadata] = await Promise.all([
       fs.readFile(imagePath).catch((error: unknown) => {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
@@ -177,32 +310,28 @@ export async function saveSnapshot(
     ]);
     if (existingImage) {
       if (!existingImage.equals(image)) {
-        throw new Error(`Snapshot ${input.snapshotId} already exists with different content`);
+        throw new Error(`Snapshot ${snapshotId} already exists with different content`);
       }
       if (existingMetadata) {
-        if (existingMetadata.snapshot_id !== input.snapshotId) {
-          throw new Error(`Snapshot ${input.snapshotId} metadata is inconsistent`);
+        if (existingMetadata.snapshot_id !== snapshotId) {
+          throw new Error(`Snapshot ${snapshotId} metadata is inconsistent`);
         }
+        await reconcileSnapshotManifestUnlocked(sessionId, manifest, snapshotDir);
         return existingMetadata;
       }
       // Repair a crash after the immutable JPEG write but before metadata write.
-      await writeJson(metadataPath, metadata);
-      const repairedJsonFiles = (await fs.readdir(snapshotDir)).filter((name) => name.endsWith('.json'));
-      await updateManifestUnlocked(sessionId, { snapshot_count: repairedJsonFiles.length });
+      await writeJsonAtomic(metadataPath, metadata);
+      await reconcileSnapshotManifestUnlocked(sessionId, manifest, snapshotDir);
       return metadata;
     }
     if (existingMetadata) {
-      throw new Error(`Snapshot ${input.snapshotId} metadata exists without its image`);
+      throw new Error(`Snapshot ${snapshotId} metadata exists without its image`);
     }
-    const manifest = await readJson<SessionManifest>(path.join(getSessionDir(sessionId), 'manifest.json'), {
-      schema_version: 1, session_id: sessionId, status: 'recording',
-    });
     if (manifest.status === 'complete') throw new Error('Completed sessions do not accept new snapshots');
-    await fs.writeFile(imagePath, image, { flag: 'wx' });
-    await writeJson(metadataPath, metadata);
+    await writeFileAtomic(imagePath, image);
+    await writeJsonAtomic(metadataPath, metadata);
 
-    const jsonFiles = (await fs.readdir(snapshotDir)).filter((name) => name.endsWith('.json'));
-    await updateManifestUnlocked(sessionId, { snapshot_count: jsonFiles.length });
+    await reconcileSnapshotManifestUnlocked(sessionId, manifest, snapshotDir);
     return metadata;
   });
 }
@@ -214,9 +343,8 @@ export async function loadSession(sessionId: string): Promise<{
   snapshots: SnapshotMetadata[];
 }> {
   const dir = getSessionDir(sessionId);
-  const manifest = await readJson<SessionManifest>(path.join(dir, 'manifest.json'), {
-    schema_version: 1, session_id: sessionId, status: 'recording',
-  });
+  const manifest = await readJson<SessionManifest | null>(path.join(dir, 'manifest.json'), null);
+  if (!manifest) throw new Error('Unknown session');
   const trace = await readJson<{ interactions: InteractionEvent[] }>(
     path.join(dir, 'trace.json'), { interactions: [] }
   );

@@ -1,20 +1,20 @@
 # UI Rater Extension - UX Analysis Baseline
 
-This Chrome extension records interaction traces, tab video, and action-linked screenshots while a user completes a task on a synthetic website. Important activations, edits, submissions, and navigations are captured before and after when the browser permits it; settled scroll states and task boundaries are also captured. Pre-action captures are explicitly best-effort and record request/start/completion timing so analysis can verify whether the image actually preceded the linked action. The local Next.js server stores one directory per task and can send the trace plus screenshots to an LLM for task-specific UX problem identification.
+This Chrome extension records interaction traces, tab video, and action-linked screenshots while a user completes a task on a synthetic website. Important activations, edits, submissions, and navigations are captured before and after when the browser permits it; settled scroll states and task boundaries are also captured. Pre-action captures are explicitly best-effort and record request/start/completion timing so analysis can verify whether the image actually preceded the linked action. The local Next.js server owns canonical attempt evidence; separate versioned-case scripts run controlled, problem-only UX analysis.
 
 ## Baseline scope
 
 The current version includes:
 
-- durable task traces backed by `chrome.storage.local`;
-- one immutable `data/sessions/<session-id>/` directory per recording attempt;
+- acknowledged, replay-safe task-trace batches with a local recovery copy;
+- one owned `data/sessions/<session-id>/` directory per recording attempt;
 - before/after screenshots for important actions, plus task boundaries and settled scroll states;
 - globally unique action IDs across full-page navigations and a reserved final screenshot slot for `task-end`;
-- one-pass multimodal UX analysis with evidence IDs;
-- optional bounded website source context and ranked source-file candidates;
+- controlled Method 1 (agent-selective evidence) and Method 3 (direct full-context) analysis with evidence IDs;
+- optional source-explore and trace-only ablations;
 - optional local export and optional upload to [`uxBench/ux-task-trace`](https://huggingface.co/datasets/uxBench/ux-task-trace).
 
-It intentionally does not include a database, job queue, multi-agent pipeline, autonomous repository exploration, automatic code changes, or privacy redaction for real websites. The model can receive a bounded read-only source snapshot, but it cannot browse or edit the repository. Use it only with the current synthetic test sites unless those safeguards are added.
+It intentionally does not include a database, distributed lock service, multi-agent pipeline, automated website changes, multi-tab trace stitching, or privacy redaction for real websites. Use it only with the current synthetic test sites unless those safeguards are added. See [the reliability and analysis contract](docs/REPAIR_CONTRACT.md).
 
 ## Feature quick reference
 
@@ -28,24 +28,23 @@ It intentionally does not include a database, job queue, multi-agent pipeline, a
 | Preview selection only | add `--dry-run` |
 | Start another run for the same participant | check **Start a new run** in the extension |
 | Report a broken recording and retry | click **Recording Problem**; if a save is stuck, use **Mark Recording Problem**; the invalidated attempt is retained |
-| Prepare LLM input without a model call | `POST /api/sessions/<session-id>/analyze?prepareOnly=1` |
-| Run LLM analysis | `POST /api/sessions/<session-id>/analyze` |
+| Audit canonical evidence without writing | `sh scripts/audit-evidence.sh` |
 | Preview/export/upload traces | use `scripts/export-traces.ps1` on Windows or `scripts/export-traces.sh` on Linux/macOS |
 | Build a coding-agent case | use `scripts/materialize-case.ps1` or `scripts/materialize-case.sh` |
-| Compare evidence-only vs source-explore UX analysis | use `scripts/run-agent-analysis.ps1` or `scripts/run-agent-analysis.sh` |
+| Run the controlled Method 1/3 comparison | `sh scripts/run-ux-experiment.sh --case .cases/<attempt-id>` |
 
 The sections below give complete commands, configuration, expected outputs, and validation steps for each entry point.
 
 ## Requirements
 
 - Chrome 116+
-- Node.js 18+
+- Node.js 20.9+
 - Python 3.10+ for Hugging Face website download and trace export
 - `huggingface_hub` for website download or trace upload
 
 ## Quick Start: test a Hugging Face website and upload the trace
 
-This path downloads a synthetic website from [`uxBench/website-generation`](https://huggingface.co/datasets/uxBench/website-generation/tree/prompt-userflow-regen-20260624), lets a participant complete selected tasks, stores the evidence locally, and optionally uploads the accepted attempts to [`uxBench/ux-task-trace`](https://huggingface.co/datasets/uxBench/ux-task-trace/tree/participant-v2).
+This path downloads a synthetic website from [`uxBench/website-generation`](https://huggingface.co/datasets/uxBench/website-generation/tree/prompt-userflow-regen-20260624), lets a participant complete selected tasks, stores the evidence locally, and optionally uploads accepted attempts to the integrity-versioned `participant-v3-integrity` revision of `uxBench/ux-task-trace`.
 
 ### 1. Install the local dependencies
 
@@ -73,7 +72,7 @@ Create `server/.env.local` if you want the completion screen to offer a live upl
 ```dotenv
 HF_TOKEN=hf_your_write_token
 HF_DATASET_REPO=uxBench/ux-task-trace
-HF_DATASET_REVISION=participant-v2
+HF_DATASET_REVISION=participant-v3-integrity
 ```
 
 The token stays in the server process and is never sent to the Chrome extension. Omit `HF_TOKEN` when you only want local recording.
@@ -178,7 +177,7 @@ powershell -ExecutionPolicy Bypass -File scripts\reconcile-hf.ps1
 ```
 
 ```bash
-sh scripts/reconcile-hf.sh --hf-repo uxBench/ux-task-trace --hf-revision participant-v2
+sh scripts/reconcile-hf.sh --hf-repo uxBench/ux-task-trace --hf-revision participant-v3-integrity
 ```
 
 ## Codex authentication on the analysis worker
@@ -236,7 +235,7 @@ The terminal should report `Selected 3/... tasks`, the task API on `http://local
 
 By default, `dev:tasks` waits after every selected task reaches `completed`, `skipped`, or `failed_no_retry`. The Extension then offers **Upload to Hugging Face** and **Keep Local Only**. Localhost stops about one second after that choice finishes, so an upload can complete before the launcher exits. Add `--keep-open` when testing multiple participants against the same selected task configuration; the completion choice still appears, but it does not stop that launcher.
 
-The upload button is available only when the server process has `HF_TOKEN` and Python can import `huggingface_hub`. Put the token in `server/.env.local` or the environment used to start the server; it is never returned to the Extension. Optional `HF_DATASET_REPO` and `HF_DATASET_REVISION` values override the defaults `uxBench/ux-task-trace` and `participant-v2`.
+The upload button is available only when the server process has `HF_TOKEN` and Python can import `huggingface_hub`. Put the token in `server/.env.local` or the environment used to start the server; it is never returned to the Extension. Optional `HF_DATASET_REPO` and `HF_DATASET_REVISION` values override the defaults `uxBench/ux-task-trace` and `participant-v3-integrity`.
 
 Completion-screen upload stages only the current participant/run in a temporary directory. It does not replace the configured persistent `exports/` folder. Canonical evidence remains under `data/participants/`, and the uploader merges the remote query indexes before committing the current run.
 
@@ -365,11 +364,11 @@ data/sessions/<session-id>/
   snapshots/
     s0001.jpg
     s0001.json
-  analysis/
-    input.json
-    findings.json
-    report.md
 ```
+
+Older sessions may also contain `analysis/` from the retired server analyzer. New
+analysis output belongs to an immutable case revision under `.cases/` and is not
+written back into canonical session evidence.
 
 The existing `data/results.json` and `data/recordings/` outputs remain for compatibility. Each completed trial in `results.json` also receives its `session_id`.
 
@@ -382,66 +381,17 @@ Find the newest `data/sessions/<session-id>/` and check:
 - every `snapshots/sNNNN.jpg` has a matching `snapshots/sNNNN.json` metadata file;
 - the corresponding `data/recordings/<participant>-trial-<n>.webm` exists and is non-empty.
 
-Prepare the exact LLM input without making a model request:
-
-```powershell
-Invoke-RestMethod -Method Post `
-  "http://localhost:3000/api/sessions/<session-id>/analyze?prepareOnly=1"
-```
-
-Then inspect `data/sessions/<session-id>/analysis/input.json`. Confirm its task text, interaction counts, snapshot IDs/paths, and optional source files match the session. The inspectable JSON records screenshot paths and metadata; during a real multimodal model call the analysis adapter reads those files and attaches their image data to the request.
-
-## Run UX analysis
-
-Copy `server/.env.example` to `server/.env.local`, then set a model that is available to your OpenAI project:
-
-```dotenv
-OPENAI_API_KEY=...
-# Optional override; defaults to gpt-5.6-terra.
-OPENAI_MODEL=gpt-5.6-terra
-
-# Source for the current Allrecipes synthetic website.
-UI_RATER_WEBSITE_SOURCE_DIR=D:\LTL-UI\uxBench\repo-cache\deepseek-v4-flash-free\allrecipes\20260625-090547-allrecipes
-```
-
-Restart the server and call:
-
-PowerShell:
-
-```powershell
-Invoke-RestMethod -Method Post `
-  http://localhost:3000/api/sessions/<session-id>/analyze
-```
-
-Linux/macOS:
+Audit the canonical participant tree before export or analysis:
 
 ```bash
-curl -X POST http://localhost:3000/api/sessions/<session-id>/analyze
+sh scripts/audit-evidence.sh --participants-dir data/participants
 ```
 
-To prepare and inspect the exact JSON input without making a model request—even when an API key is configured—use:
+The audit is read-only and exits non-zero for broken ownership, non-increasing trace sequences, missing screenshot pairs, manifest-count mismatches, incomplete v2 finalization, or invalid accepted-attempt pointers.
 
-```text
-POST /api/sessions/<session-id>/analyze?prepareOnly=1
-```
+## Retired server analyzer
 
-If `OPENAI_API_KEY` is missing, the endpoint makes no model request. It still writes `analysis/input.json`, which is useful for inspecting exactly what would be sent. `gpt-5.6-terra` is the default model; `OPENAI_MODEL` can override it.
-
-The prompt is deliberately short: report only task-specific usability problems supported by supplied evidence, cite existing event/snapshot IDs, explain task impact, and return the fixed problem-only JSON schema. It does not ask for recommendations, code changes, or source-file candidates.
-
-## Isolated LLM analysis module
-
-All model-facing code is isolated in `server/lib/ux-analysis/`:
-
-- `input.ts`: writes the inspectable `analysis/input.json`;
-- `source-context.ts`: reads a server-configured source root with extension, directory, file-count, and character limits;
-- `prompt.ts`: owns the lean prompt and JSON schema;
-- `openai.ts`: the only module allowed to call the OpenAI API;
-- `validate.ts`: rejects unknown event and screenshot references;
-- `report.ts`: renders `report.md`;
-- `index.ts`: exposes prepare-only and full-analysis operations.
-
-The HTTP request cannot supply a filesystem path. `UI_RATER_WEBSITE_SOURCE_DIR` must be configured by the server operator, and its final directory name must match the session's `app_id`. For the current pilot, that name is `20260625-090547-allrecipes`.
+`POST /api/sessions/<session-id>/analyze` now returns HTTP 410. The former server analyzer had a different input-selection policy and could not produce a controlled comparison with the analysis-worker harness. Use versioned materialization plus `scripts/run-ux-experiment.sh`; `GET` remains admin-protected only for reading historical findings already on disk.
 
 ## Analysis-worker scope
 
@@ -449,19 +399,23 @@ The intended role of this machine is narrow: download one UX task attempt and th
 
 ## Dataset-to-agent analysis
 
-The v2 analysis flow uses `uxBench/ux-task-trace` as a reproducible evidence baseline. It selects one accepted attempt, obtains exact website provenance from its parent `run.json`, downloads or reuses the matching website source revision, validates checksums, and materializes a sandbox:
+The integrity-v3 analysis flow selects one accepted attempt, pins the HF commit, verifies its detached artifact manifest, obtains exact website provenance from the parent `run.json`, and creates an immutable case revision:
 
 ```text
-case.json
-analysis-case.json       # canonical task/outcome context shared by analysis methods
-evidence-manifest.json # ordered trace/screenshot catalog with hashes
-evidence/   # participant, run, task, attempt, trace, screenshots, optional video
-website/    # application source from exact revision, read-only; agent configs excluded
-contract/   # lean instructions and output schema
-output/     # the agent's only writable directory
+.cases/<attempt-id>/
+  latest-case.json
+  revisions/<case_revision_id>/
+    case.json
+    analysis-case.json
+    evidence-manifest.json
+    case-integrity.json
+    evidence/   # participant, run, task, attempt, trace, screenshots, optional video
+    website/    # filtered source from the exact revision
+    contract/   # problem-only instructions and strict output schema
+    output/     # immutable run directories and successful pointers
 ```
 
-The same case supports two controlled Codex conditions plus a direct one-shot ablation. The pinned defaults are `gpt-5.6-sol` with `medium` reasoning effort. `evidence-only` receives the canonical analysis case, complete trace, screenshot catalog/metadata, and all captured screenshots in a temporary workspace that contains no website source. `source-explore` receives the same inputs and may additionally search a clean, read-only copy of the application source tree; prior analysis outputs are excluded. `direct-one-shot` sends that same canonical evidence set and every screenshot in one multimodal Responses request through the local CLIProxyAPI, without source, tools, or a multi-turn agent loop. All conditions report only evidence-grounded UX problems for the specific task; none proposes code changes. See [`docs/UX_ANALYSIS_HARNESS.md`](docs/UX_ANALYSIS_HARNESS.md) for the harness decision and comparison design.
+The primary comparison is Method 1 versus Method 3 with `gpt-5.6-sol` and `medium` reasoning. Method 1 gives Codex a read-only workspace containing the full trace and full screenshot catalog; images are not pre-attached, so the agent chooses which ones to inspect. Method 3 sends all canonical JSON and every screenshot in one multimodal Responses call through loopback CLIProxyAPI, with no tools or source. Method 2 adds source to Method 1, and Method 4 removes screenshots from Method 3; both are optional ablations. Every method reports only evidence-grounded UX problems for this participant's specific task and never proposes code changes.
 
 Materialize a local accepted attempt on Windows:
 
@@ -475,24 +429,24 @@ Materialize the same attempt from an exact HF revision on Linux/macOS:
 
 ```bash
 sh scripts/materialize-case.sh \
-  --hf-repo uxBench/ux-task-trace --hf-revision participant-v2 \
+  --hf-repo uxBench/ux-task-trace --hf-revision participant-v3-integrity \
   --attempt-id <attempt-id> --output .cases/<attempt-id>
 ```
 
 Both commands reject non-accepted attempts by default. For an explicit audit investigation, add `-Audit` on PowerShell or `--audit` on Linux/macOS; unfinished `recording` and `completed_pending_outcome` attempts are always rejected.
 
-Run both controlled conditions through the already authenticated Codex CLI:
+Run the primary controlled comparison (Methods 1 and 3):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run-agent-analysis.ps1 `
-  -Case .cases\<attempt-id> -Condition both
+.venv\Scripts\python.exe scripts\run_ux_experiment.py `
+  --case .cases\<attempt-id> --methods 1,3
 ```
 
 ```bash
-sh scripts/run-agent-analysis.sh --case .cases/<attempt-id> --condition both
+sh scripts/run-ux-experiment.sh --case .cases/<attempt-id> --methods 1,3
 ```
 
-All captured screenshots are included by default. If a future attempt contains too many images for the available context budget, add `--max-screenshots N`; the runner samples evenly across the complete attempt instead of truncating the end of the task.
+Method 1 exposes every captured screenshot for selective inspection. Method 3 sends the entire canonical image set or exits as `ineligible` before the API request when `--max-input-bytes` is exceeded; no primary run silently samples or truncates images. `--max-screenshots` remains a diagnostic-only Method 1 option and makes that run comparison-ineligible.
 
 With CLIProxyAPI running locally on its default port, run the direct one-shot ablation:
 
@@ -506,17 +460,17 @@ Run the trace-only ablation with the same model and reasoning effort:
 sh scripts/run-direct-analysis.sh --case .cases/<attempt-id> --condition trace-only
 ```
 
-Set `UI_RATER_CODEX_MODEL`, `UI_RATER_CODEX_REASONING_EFFORT`, or `UI_RATER_CODEX_COMMAND` only when overriding the pinned Codex harness defaults. The direct runner separately supports `UI_RATER_DIRECT_MODEL` and `UI_RATER_DIRECT_REASONING_EFFORT`. Every invocation writes an immutable directory under `output/runs/<analysis-run-id>/`; `output/latest.json` records the latest run ID for each harness. See [`docs/LLM_AGENT_SANDBOX_V2.md`](docs/LLM_AGENT_SANDBOX_V2.md) for the case contract.
+Set `UI_RATER_CODEX_MODEL`, `UI_RATER_CODEX_REASONING_EFFORT`, or `UI_RATER_CODEX_COMMAND` only when overriding the pinned Codex harness defaults. The direct runner separately supports `UI_RATER_DIRECT_MODEL` and `UI_RATER_DIRECT_REASONING_EFFORT`. Every invocation writes a unique directory under `output/runs/<analysis-run-id>/`; only validated success updates `output/latest-success.json`. The experiment manifest records prompts, hashes, case/evidence roots, resolved models, usage, and inspected screenshot IDs.
 
 ## Suggested LLM pilot test
 
-1. Start the server with `UI_RATER_WEBSITE_SOURCE_DIR` set to the Allrecipes source above.
-2. Reload the unpacked Chrome extension.
-3. Complete the task “Open the reviews of a recipe with beef sirloin.”
-4. Find `session_id` in `data/results.json` or use the newest `data/sessions/<session-id>` directory.
-5. Call the prepare-only endpoint and inspect `analysis/input.json`.
-6. Confirm the trace is ordered, screenshots open correctly, and `source.files` includes files such as `src/components/ReviewSection.jsx`.
-7. Set `OPENAI_API_KEY`, call the normal analyze endpoint, and inspect `findings.json` plus `report.md`.
+1. Record and accept one mocked-site task attempt.
+2. Run `sh scripts/audit-evidence.sh` and resolve any hard issue.
+3. Export/upload it on `participant-v3-integrity`, then materialize the exact attempt and website source into `.cases/<attempt-id>`.
+4. Inspect `latest-case.json`, `case-integrity.json`, `evidence-manifest.json`, the ordered trace, and several screenshot pairs.
+5. Start loopback CLIProxyAPI and run `sh scripts/run-ux-experiment.sh --case .cases/<attempt-id> --methods 1,3`.
+6. Confirm `comparison_eligible` is true and both outputs cite only real event/snapshot IDs; Method 1 snapshot citations must also appear in `inspected_snapshot_ids`.
+7. Judge task relevance, evidence grounding, specificity, unsupported claims, and useful unique findings manually. Do not ask the same model run to grade itself.
 
 The pilot succeeds at the infrastructure level when every accepted finding describes task-specific friction, explains its task impact, and cites real event/snapshot IDs. Finding quality should still be judged manually in this first pilot.
 
@@ -541,8 +495,8 @@ Copy `scripts/trace-export.example.json` to a local config file and edit it:
 
 ```json
 {
-  "schema_version": "2.0",
-  "layout": "participant-v2",
+  "schema_version": "3.0",
+  "layout": "participant-v3-integrity",
   "export_mode": "accepted",
   "participants_dir": "data/participants",
   "sync_state_dir": "data/sync-state",
@@ -550,24 +504,24 @@ Copy `scripts/trace-export.example.json` to a local config file and edit it:
   "local_export_dir": "exports/ux-task-trace",
   "upload_hf": false,
   "hf_repo_id": "uxBench/ux-task-trace",
-  "hf_revision": "participant-v2"
+  "hf_revision": "participant-v3-integrity"
 }
 ```
 
 The settings mean:
 
 - `export_mode`: `accepted` exports completed runs and accepted attempts; `audit` also includes terminal failed, skipped-outcome, and invalidated attempts;
-- `participants_dir`: participant-v2 local source of truth;
+- `participants_dir`: canonical participant/run/task/attempt source tree;
 - `sync_state_dir`: records the exact HF commit after a successful upload;
 - `keep_local_export`: create an additional persistent export package;
 - `local_export_dir`: path for that package;
 - `upload_hf`: enable a live Hugging Face write;
 - `hf_repo_id`: dataset repository, default `uxBench/ux-task-trace`;
-- `hf_revision`: isolated HF dataset revision, default `participant-v2`.
+- `hf_revision`: integrity dataset revision, default `participant-v3-integrity`.
 
 Relative paths are resolved from the extension repository root. Environment variables can override the config: `UI_RATER_PARTICIPANTS_DIR`, `UI_RATER_KEEP_LOCAL_EXPORT`, `UI_RATER_LOCAL_EXPORT_DIR`, `UI_RATER_UPLOAD_HF`, `HF_DATASET_REPO`, and `HF_DATASET_REVISION`.
 
-The exporter validates IDs, statuses, manifest/session linkage, non-empty trace/video, screenshot pairs, and SHA-256 checksums. It never deletes canonical participant data. On a successful HF commit it writes local sync state. Incremental uploads merge participant, run, and attempt indexes already present on the HF revision, so uploading one completed run does not remove older rows from the indexes. Runs are discovered from the canonical participant folders, so no separate upload queue is required for this single-operator baseline.
+The exporter validates IDs, ownership, statuses, manifest/session linkage, non-empty trace/video, screenshot pairs, and symlink-free paths. It builds a detached `artifact-manifest.json` with byte counts and SHA-256 roots in a sibling staging directory, then atomically publishes the export. It never deletes canonical participant data. Incremental uploads preserve prior indexes and reject an existing attempt ID whose artifact root differs.
 
 The exported layout is:
 
@@ -581,12 +535,15 @@ participants/<participant-id>/
         trace.json
         recording.webm
         snapshots/
-        analysis/
 ```
+
+Legacy attempts may retain a historical `analysis/` directory in the exported
+artifact. Case materialization excludes that derived output so it cannot bias a
+fresh Method 1/3 comparison.
 
 Website/model provenance moves into `run.json` and root query indexes. The default HF export contains completed runs and accepted attempts. Audit mode may include failed, skipped-outcome, or invalidated attempts with attempt/task outcome, reason, timestamps, and an `artifact_complete` flag when a failure happened before all evidence existed.
 
-Before the first v2 export, preview or copy legacy data without deleting it:
+Before the first participant-tree export, preview or copy legacy data without deleting it:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\migrate-legacy-participants.ps1 -DataDir data
@@ -673,7 +630,7 @@ powershell -ExecutionPolicy Bypass -File scripts\reconcile-hf.ps1
 ```
 
 ```bash
-sh scripts/reconcile-hf.sh --hf-repo uxBench/ux-task-trace --hf-revision participant-v2
+sh scripts/reconcile-hf.sh --hf-repo uxBench/ux-task-trace --hf-revision participant-v3-integrity
 ```
 
 Both commands are read-only. They return a non-zero exit code for missing or stale attempts.
@@ -683,7 +640,10 @@ Both commands are read-only. They return a non-zero exit code for missing or sta
 From the extension root:
 
 ```bash
-node --test tests/*.test.js
+cd server
+npm test
+cd ..
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
 From `server/`:
@@ -696,7 +656,10 @@ npm run lint
 Validate the exporter without external writes:
 
 ```bash
-python scripts/export_traces.py --dry-run
+sh scripts/export-traces.sh --dry-run
 ```
 
-The detailed execution goals and boundaries are in [the baseline implementation plan](docs/superpowers/plans/2026-07-16-evidence-grounded-ux-analysis.md).
+The current delivery boundaries and definitions of done are in
+[`docs/REPAIR_CONTRACT.md`](docs/REPAIR_CONTRACT.md). Files under
+`docs/superpowers/` are historical design records and do not override the
+current capture or analysis contract.

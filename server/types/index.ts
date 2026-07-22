@@ -1,12 +1,13 @@
 export type InteractionEventKind =
   | 'pageload' | 'click' | 'rightclick' | 'scroll' | 'mousemove'
   | 'input' | 'change' | 'keydown' | 'formsubmit' | 'copy' | 'paste'
-  | 'focus' | 'resize' | 'navigate' | 'snapshot-skipped'
+  | 'focus' | 'resize' | 'navigate' | 'snapshot-skipped' | 'snapshot-failed' | 'pagehide'
   // Compatibility with the existing side-by-side comparison UI.
   | 'expand' | 'collapse' | 'hover_start' | 'hover_end'
   | 'iframe_click' | 'iframe_scroll';
 
 export interface InteractionEvent {
+  event_id?: string;
   kind: InteractionEventKind;
   seq?: number;
   side?: 'left' | 'right';
@@ -80,6 +81,8 @@ export interface SessionManifest {
   duration_ms?: number;
   interaction_count?: number;
   snapshot_count?: number;
+  snapshot_bytes?: number;
+  processed_batch_ids?: string[];
   completed_at?: string;
   attempt_id?: string;
   run_id?: string;
@@ -95,6 +98,7 @@ export interface SessionManifest {
   final_flush_status?: 'complete' | 'unavailable';
   final_flush_error?: string;
   website?: WebsiteMetadata;
+  finalization_report?: Record<string, unknown>;
 }
 
 export interface WebsiteMetadata {
@@ -118,6 +122,7 @@ export interface WebsiteMetadata {
 
 export interface SnapshotMetadata {
   snapshot_id: string;
+  capture_request_id?: string;
   reason: string;
   action_id?: string;
   phase?: 'before' | 'after';

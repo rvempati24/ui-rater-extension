@@ -6,15 +6,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import stat
 import tempfile
+import uuid
 
 try:
-    from scripts.ux_evidence import write_evidence_manifest
+    from scripts.ux_evidence import (
+        atomic_write_json, canonical_sha256, exclusive_file_lock,
+        sha256_file, tree_digest, validate_case_integrity, write_evidence_manifest,
+    )
 except ModuleNotFoundError:
-    from ux_evidence import write_evidence_manifest
+    from ux_evidence import (
+        atomic_write_json, canonical_sha256, exclusive_file_lock,
+        sha256_file, tree_digest, validate_case_integrity, write_evidence_manifest,
+    )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -30,8 +37,14 @@ def find_local_attempt(participants_dir: Path, attempt_id: str) -> Path:
         for line in index.read_text(encoding="utf-8").splitlines():
             row = json.loads(line)
             if row.get("attempt_id") == attempt_id:
-                candidate = participants_dir / row["artifact_path"]
-                if candidate.exists():
+                relative = PurePosixPath(str(row.get("artifact_path", "")))
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise ValueError("Attempt index contains an unsafe artifact_path")
+                candidate = (participants_dir / Path(*relative.parts)).resolve()
+                root = participants_dir.resolve()
+                if root not in candidate.parents:
+                    raise ValueError("Attempt index artifact_path escapes participants_dir")
+                if candidate.is_dir() and load_json(candidate / "attempt.json").get("attempt_id") == attempt_id:
                     return candidate
     for candidate in participants_dir.glob("*/runs/*/tasks/*/attempts/*/attempt.json"):
         if load_json(candidate).get("attempt_id") == attempt_id:
@@ -44,15 +57,19 @@ def download_hf_attempt(repo_id: str, revision: str, attempt_id: str, token: str
         from huggingface_hub import HfApi, hf_hub_download, snapshot_download
     except ImportError as error:
         raise SystemExit("Install huggingface_hub with: python -m pip install huggingface_hub") from error
+    info = HfApi(token=token).dataset_info(repo_id, revision=revision)
     index_file = Path(hf_hub_download(
-        repo_id=repo_id, repo_type="dataset", revision=revision,
+        repo_id=repo_id, repo_type="dataset", revision=info.sha,
         filename="index/attempts.jsonl", token=token, cache_dir=cache,
     ))
     row = next((json.loads(line) for line in index_file.read_text(encoding="utf-8").splitlines()
                 if json.loads(line).get("attempt_id") == attempt_id), None)
     if not row:
         raise FileNotFoundError(f"Attempt {attempt_id} is absent from {repo_id}@{revision}")
-    artifact = Path(row["artifact_path"])
+    artifact_value = PurePosixPath(str(row.get("artifact_path", "")))
+    if artifact_value.is_absolute() or ".." in artifact_value.parts or len(artifact_value.parts) < 7:
+        raise ValueError("HF attempt index contains an unsafe artifact_path")
+    artifact = Path(*artifact_value.parts)
     task = artifact.parent.parent
     run = task.parent.parent
     participant = run.parent.parent
@@ -62,12 +79,17 @@ def download_hf_attempt(repo_id: str, revision: str, attempt_id: str, token: str
         f"{run.as_posix()}/run.json", f"{task.as_posix()}/task.json",
         f"{artifact.as_posix()}/**",
     ]
+    local_dir = cache / "hf-attempts" / canonical_sha256({
+        "repo_id": repo_id, "commit_sha": info.sha, "attempt_id": attempt_id,
+    })[:32]
     root = Path(snapshot_download(
-        repo_id=repo_id, repo_type="dataset", revision=revision, token=token,
-        cache_dir=cache, allow_patterns=patterns,
+        repo_id=repo_id, repo_type="dataset", revision=info.sha, token=token,
+        cache_dir=cache, local_dir=local_dir, allow_patterns=patterns,
     ))
-    info = HfApi(token=token).dataset_info(repo_id, revision=revision)
-    return root / artifact, info.sha
+    result = (root / artifact).resolve()
+    if root.resolve() not in result.parents or not result.is_dir():
+        raise ValueError("Downloaded artifact path is invalid")
+    return result, info.sha
 
 
 def parents(attempt_dir: Path) -> tuple[Path, Path, Path]:
@@ -77,7 +99,9 @@ def parents(attempt_dir: Path) -> tuple[Path, Path, Path]:
     return task_dir, run_dir, participant_dir
 
 
-def resolve_source(run: dict, explicit: Path | None, token: str | None, cache: Path) -> tuple[Path, str]:
+def resolve_source(
+    run: dict, explicit: Path | None, token: str | None, cache: Path
+) -> tuple[Path, str, bool]:
     website = run.get("website") or {}
     if explicit:
         source = explicit.resolve()
@@ -85,27 +109,86 @@ def resolve_source(run: dict, explicit: Path | None, token: str | None, cache: P
             raise FileNotFoundError(f"Website source does not exist: {source}")
         metadata_file = source / "ui-rater-website.json"
         metadata = load_json(metadata_file) if metadata_file.is_file() else {}
-        return source, str(metadata.get("commit_sha") or website.get("commit_sha") or "explicit-local")
+        metadata_sha = metadata.get("commit_sha")
+        expected_sha = website.get("commit_sha")
+        verified = bool(metadata_sha and (not expected_sha or metadata_sha == expected_sha))
+        return source, str(metadata_sha or "explicit-local"), verified
     local = website.get("source_dir")
     if local and Path(local).is_dir():
-        return Path(local).resolve(), str(website.get("commit_sha") or "local")
+        source = Path(local).resolve()
+        metadata_file = source / "ui-rater-website.json"
+        metadata = load_json(metadata_file) if metadata_file.is_file() else {}
+        expected_sha = website.get("commit_sha")
+        metadata_sha = metadata.get("commit_sha")
+        return source, str(metadata_sha or expected_sha or "local"), bool(
+            metadata_sha and (not expected_sha or metadata_sha == expected_sha)
+        )
     repo_id = website.get("repo_id")
     revision = website.get("revision")
     path_in_repo = website.get("path_in_repo")
     if not repo_id or not revision or not path_in_repo:
         raise FileNotFoundError("Exact website source provenance is unavailable; pass --website-source")
+    source_path = PurePosixPath(str(path_in_repo))
+    if source_path.is_absolute() or ".." in source_path.parts or not source_path.parts:
+        raise ValueError("Website provenance contains an unsafe path_in_repo")
     try:
         from huggingface_hub import snapshot_download
     except ImportError as error:
         raise SystemExit("Install huggingface_hub with: python -m pip install huggingface_hub") from error
+    pinned = str(website.get("commit_sha") or revision)
+    local_dir = cache / "hf-websites" / canonical_sha256({
+        "repo_id": repo_id, "commit_sha": pinned, "path_in_repo": source_path.as_posix(),
+    })[:32]
     root = Path(snapshot_download(
-        repo_id=repo_id, repo_type="dataset", revision=revision, token=token,
-        cache_dir=cache, allow_patterns=[f"{path_in_repo}/**"],
+        repo_id=repo_id, repo_type="dataset", revision=pinned, token=token,
+        cache_dir=cache, local_dir=local_dir,
+        allow_patterns=[f"{source_path.as_posix()}/**"],
     ))
-    source = root / path_in_repo
+    source = root / Path(*source_path.parts)
     if not source.is_dir():
-        raise FileNotFoundError(f"Downloaded website path is absent: {path_in_repo}")
-    return source, str(website.get("commit_sha") or revision)
+        raise FileNotFoundError(f"Downloaded website path is absent: {source_path.as_posix()}")
+    return source, pinned, True
+
+
+def verify_export_artifact(attempt_dir: Path, attempt: dict) -> dict:
+    manifest_file = attempt_dir / str(attempt.get("artifact_manifest", "artifact-manifest.json"))
+    if not manifest_file.is_file():
+        return {"verified": False, "reason": "legacy-artifact-without-detached-manifest"}
+    manifest = load_json(manifest_file)
+    if manifest.get("attempt_id") != attempt.get("attempt_id"):
+        raise ValueError("Artifact manifest attempt_id mismatch")
+    root_input = {key: value for key, value in manifest.items() if key != "root_sha256"}
+    if canonical_sha256(root_input) != manifest.get("root_sha256"):
+        raise ValueError("Artifact manifest root hash mismatch")
+    for record in manifest.get("files", []):
+        relative = PurePosixPath(str(record.get("path", "")))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("Artifact manifest contains an unsafe path")
+        candidate = (attempt_dir / Path(*relative.parts)).resolve()
+        if (attempt_dir.resolve() not in candidate.parents or candidate.is_symlink()
+                or not candidate.is_file() or candidate.stat().st_size != record.get("bytes")):
+            raise ValueError(f"Artifact is missing or unsafe: {relative}")
+        expected = str(record.get("sha256", "")).removeprefix("sha256:")
+        if sha256_file(candidate) != expected:
+            raise ValueError(f"Artifact checksum mismatch: {relative}")
+    expected_files = {str(record["path"]) for record in manifest.get("files", [])}
+    actual_files = set()
+    for candidate in attempt_dir.rglob("*"):
+        if candidate.is_symlink():
+            raise ValueError(f"Artifact contains a symlink: {candidate.relative_to(attempt_dir)}")
+        if candidate.is_file():
+            actual_files.add(candidate.relative_to(attempt_dir).as_posix())
+    if actual_files != expected_files | {manifest_file.relative_to(attempt_dir).as_posix()}:
+        raise ValueError("Artifact file set does not match its detached manifest")
+    return {"verified": True, "root_sha256": manifest["root_sha256"]}
+
+
+def reject_symlinks(root: Path, label: str) -> None:
+    if root.is_symlink():
+        raise ValueError(f"{label} may not be a symlink")
+    for item in root.rglob("*"):
+        if item.is_symlink():
+            raise ValueError(f"{label} contains a symlink: {item.relative_to(root)}")
 
 
 def make_read_only(root: Path) -> None:
@@ -154,28 +237,37 @@ def materialize(
     task = load_json(task_dir / "task.json")
     run = load_json(run_dir / "run.json")
     participant = load_json(participant_dir / "participant.json")
+    if (run.get("participant_id") != participant.get("participant_id")
+            or task.get("participant_id") != participant.get("participant_id")
+            or attempt.get("participant_id") != participant.get("participant_id")):
+        raise ValueError("Participant IDs are inconsistent across the attempt hierarchy")
+    if task.get("run_id") != run.get("run_id") or attempt.get("run_id") != run.get("run_id"):
+        raise ValueError("Run IDs are inconsistent across the attempt hierarchy")
+    if attempt.get("assignment_id") != task.get("assignment_id"):
+        raise ValueError("Attempt assignment_id does not match task.json")
+    artifact_verification = verify_export_artifact(attempt_dir, attempt)
+    reject_symlinks(attempt_dir, "Attempt evidence")
+    reject_symlinks(source, "Website source")
     target = destination.resolve()
     for protected in (attempt_dir.resolve(), source.resolve()):
         if target == protected or protected in target.parents or target in protected.parents:
             raise ValueError("Case destination must not overlap evidence or website source")
-    if destination.exists():
-        marker = destination / "case.json"
-        if any(destination.iterdir()) and (
-            not marker.exists() or load_json(marker).get("schema_version") != "2.0"
-        ):
-            raise ValueError("Refusing to replace a directory that is not a materialized v2 case")
-        make_writable(destination)
-        shutil.rmtree(destination)
+    if destination.exists() and any(destination.iterdir()):
+        raise ValueError("Case build destination must be empty; publish through a revision stage")
     evidence = destination / "evidence"
     contract = destination / "contract"
     output = destination / "output"
-    evidence.mkdir(parents=True)
+    evidence.mkdir(parents=True, exist_ok=True)
     contract.mkdir()
     output.mkdir()
     for name, value in (("participant.json", participant), ("run.json", run), ("task.json", task)):
         (evidence / name).write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
     for item in attempt_dir.iterdir():
         if no_video and item.name == "recording.webm":
+            continue
+        if item.name == "analysis":
+            # Historical analyzer output is derived data and would contaminate
+            # a fresh Method 1/3 comparison.
             continue
         target = evidence / item.name
         if item.is_dir():
@@ -237,8 +329,29 @@ def materialize(
         encoding="utf-8",
     )
     snapshots = sorted(path.relative_to(destination).as_posix() for path in (evidence / "snapshots").glob("*.jpg")) if (evidence / "snapshots").exists() else []
+    # Hash the exact filtered source tree exposed to the analyzer, not the
+    # larger checkout from which it was copied. This makes the revision digest
+    # reproducible using only the materialized case.
+    source_tree_sha256 = tree_digest(destination / "website")
+    revision_input = {
+        "contract_version": "ux-problem-only-v3",
+        "contract_tree_sha256": tree_digest(contract),
+        "attempt_id": attempt["attempt_id"],
+        "artifact_root_sha256": artifact_verification.get("root_sha256"),
+        "legacy_artifact_tree_sha256": None if artifact_verification.get("verified")
+        else tree_digest(attempt_dir),
+        "source_tree_sha256": source_tree_sha256,
+        "source_commit_sha": dataset.get("source_commit_sha"),
+        "context_sha256": canonical_sha256({
+            "participant": participant, "run": run, "task": task, "dataset": dataset,
+        }),
+        "no_video": no_video,
+    }
+    case_revision_id = f"case_{canonical_sha256(revision_input)[:24]}"
+    local_source_verified = bool(dataset.get("source_verified"))
     case = {
         "schema_version": "2.0", "case_id": attempt["attempt_id"],
+        "case_revision_id": case_revision_id,
         "participant_id": participant["participant_id"], "run_id": run["run_id"],
         "assignment_id": task["assignment_id"], "attempt_id": attempt["attempt_id"],
         "session_id": attempt["session_id"],
@@ -253,12 +366,19 @@ def materialize(
         "task_status": task.get("status"),
         "website": run.get("website", {}),
         "dataset": dataset,
+        "artifact_verification": artifact_verification,
+        "source_verification": {
+            "verified": local_source_verified,
+            "commit_sha": dataset.get("source_commit_sha"),
+            "tree_sha256": source_tree_sha256,
+        },
         "evidence": {"trace": "evidence/trace.json", "snapshots": snapshots,
                      "recording": None if no_video or not (evidence / "recording.webm").is_file()
                      else "evidence/recording.webm"},
         "source_root": "website", "output_schema": "contract/finding.schema.json",
         "analysis_case": "analysis-case.json",
         "evidence_manifest": "evidence-manifest.json",
+        "integrity_manifest": "case-integrity.json",
     }
     analysis_case = {
         "schema_version": 1,
@@ -267,11 +387,25 @@ def materialize(
         "outcome": attempt.get("outcome"),
         "task": case["task"],
     }
-    (destination / "analysis-case.json").write_text(
-        json.dumps(analysis_case, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    atomic_write_json(destination / "analysis-case.json", analysis_case)
     write_evidence_manifest(destination, case)
-    (destination / "case.json").write_text(json.dumps(case, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(destination / "case.json", case)
+    integrity_records = []
+    for file in sorted(path for path in destination.rglob("*") if path.is_file()):
+        relative = file.relative_to(destination).as_posix()
+        if relative == "case-integrity.json" or relative.startswith("output/"):
+            continue
+        integrity_records.append({
+            "path": relative, "bytes": file.stat().st_size, "sha256": sha256_file(file),
+        })
+    integrity = {
+        "schema_version": 1,
+        "case_revision_id": case_revision_id,
+        "files": integrity_records,
+    }
+    integrity["root_sha256"] = canonical_sha256(integrity)
+    atomic_write_json(destination / "case-integrity.json", integrity)
+    validate_case_integrity(destination, case)
     make_read_only(evidence)
     make_read_only(destination / "evidence-manifest.json")
     make_read_only(destination / "analysis-case.json")
@@ -279,12 +413,54 @@ def materialize(
     return case
 
 
+def materialize_versioned(
+    attempt_dir: Path,
+    case_root: Path,
+    source: Path,
+    dataset: dict,
+    no_video: bool = False,
+    audit: bool = False,
+) -> tuple[dict, Path]:
+    case_root = case_root.resolve()
+    revisions = case_root / "revisions"
+    revisions.mkdir(parents=True, exist_ok=True)
+    stage = revisions / f".stage-{uuid.uuid4().hex}"
+    try:
+        case = materialize(attempt_dir, stage, source, dataset, no_video, audit)
+        final = revisions / case["case_revision_id"]
+        with exclusive_file_lock(case_root / ".materialize.lock"):
+            if final.exists():
+                existing_case = load_json(final / "case.json")
+                existing_integrity = validate_case_integrity(final, existing_case)
+                staged_integrity = validate_case_integrity(stage, case)
+                if existing_case.get("case_revision_id") != case["case_revision_id"]:
+                    raise ValueError("Existing case revision has conflicting content")
+                if existing_integrity.get("root_sha256") != staged_integrity.get("root_sha256"):
+                    raise ValueError("Existing case revision hash collides with different content")
+                make_writable(stage)
+                shutil.rmtree(stage)
+                case = existing_case
+            else:
+                os.replace(stage, final)
+            pointer = {
+                "schema_version": 1,
+                "case_revision_id": case["case_revision_id"],
+                "path": final.relative_to(case_root).as_posix(),
+            }
+            atomic_write_json(case_root / "latest-case.json", pointer)
+        return case, final
+    finally:
+        if stage.exists():
+            make_writable(stage)
+            shutil.rmtree(stage)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--attempt-id", required=True)
     parser.add_argument("--participants-dir", default=str(REPO_ROOT / "data" / "participants"))
     parser.add_argument("--hf-repo")
-    parser.add_argument("--hf-revision", default="participant-v2")
+    parser.add_argument("--hf-revision", default="participant-v3-integrity")
     parser.add_argument("--website-source")
     parser.add_argument("--output", required=True)
     parser.add_argument("--cache-dir", default=str(REPO_ROOT / ".case-cache"))
@@ -303,12 +479,18 @@ def main() -> int:
         dataset = {"source": "local"}
     _, run_dir, _ = parents(attempt_dir)
     run = load_json(run_dir / "run.json")
-    source, source_sha = resolve_source(run, Path(args.website_source) if args.website_source else None, token, cache)
-    case = materialize(
-        attempt_dir, Path(args.output).resolve(), source,
-        {**dataset, "source_commit_sha": source_sha}, args.no_video, args.audit,
+    source, source_sha, source_verified = resolve_source(
+        run, Path(args.website_source) if args.website_source else None, token, cache
     )
-    print(json.dumps({"ok": True, "case": str(Path(args.output).resolve()), "attempt_id": case["attempt_id"]}))
+    case, revision_dir = materialize_versioned(
+        attempt_dir, Path(args.output).resolve(), source,
+        {**dataset, "source_commit_sha": source_sha, "source_verified": source_verified},
+        args.no_video, args.audit,
+    )
+    print(json.dumps({
+        "ok": True, "case": str(revision_dir), "case_root": str(Path(args.output).resolve()),
+        "case_revision_id": case["case_revision_id"], "attempt_id": case["attempt_id"],
+    }))
     return 0
 
 

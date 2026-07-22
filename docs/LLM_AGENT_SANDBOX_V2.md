@@ -1,8 +1,8 @@
-# LLM and Coding-Agent Input v2
+# Versioned LLM and agent input contract
 
 ## Decision
 
-`uxBench/ux-task-trace` is the portable baseline dataset, but it is not passed directly to a model as one large prompt. An input materializer selects one accepted attempt, resolves its exact website source from run provenance, validates the evidence, and creates a bounded sandbox for either the existing API analyzer or a repository-aware coding agent.
+`uxBench/ux-task-trace@participant-v3-integrity` is the portable evidence baseline. The materializer pins a dataset commit, verifies the detached attempt manifest, resolves exact website source from run provenance, and publishes a content-addressed case revision. The retired server analyzer is not part of this contract.
 
 ```text
 HF participant dataset or local participant folders
@@ -13,7 +13,7 @@ HF participant dataset or local participant folders
                 |
    resolve exact website revision
                 |
-       materialize case sandbox
+   materialize immutable case revision
           /                 \
  evidence-only         source-explore
 ```
@@ -24,7 +24,7 @@ This makes local and downloaded cases use the same contract while keeping model 
 
 ### Evidence-only baseline
 
-This condition sends compact case metadata, the full attempt trace, and selected key screenshots through Codex. Its temporary workspace does not contain `website/`, so source access is structurally impossible rather than discouraged only by the prompt.
+This condition gives Codex compact case metadata, the full attempt trace, and the complete screenshot catalog. Images remain available in the temporary workspace and Codex selects which ones to inspect; they are not all attached to the initial prompt. The workspace does not contain `website/`.
 
 Use this condition first to establish latency, cost, and UX-problem quality baselines.
 
@@ -40,9 +40,9 @@ The materializer accepts one of:
 
 - local `attempt_id` resolved through the participant indexes/folder tree;
 - HF dataset revision plus `attempt_id` resolved through `index/attempts.jsonl`;
-- an explicit local attempt directory for migration/debugging.
+- a local canonical participant tree plus `attempt_id`.
 
-Only `status: accepted` is eligible by default. `--include-invalidated` is an explicit audit-only option. Selection by participant/run/task is translated to one immutable attempt ID before files are copied.
+Only `status: accepted` is eligible by default. `--audit` explicitly permits terminal failed or invalidated attempts for diagnosis, but those runs are not primary-comparison eligible.
 
 ## Exact source resolution
 
@@ -50,20 +50,21 @@ The materializer reads website provenance from the attempt's parent `run.json`. 
 
 Resolution order:
 
-1. Reuse a verified local cache matching repository, revision/path, and commit SHA.
-2. Download the exact website run from `uxBench/website-generation` using `repo_id`, `revision`, and `path_in_repo`.
-3. For a configured Git source, check out the recorded commit SHA into a disposable worktree.
-4. Fail with `source_unavailable` if exact provenance cannot be resolved.
+1. Use an explicitly supplied local source directory and verify its `ui-rater-website.json` commit when present.
+2. Reuse the run's recorded local `source_dir` with the same verification.
+3. Otherwise download `repo_id/path_in_repo` at the recorded commit or revision.
+4. Fail if source cannot be resolved.
 
 The resolved source is checked against recorded metadata/checksums when available. A mismatch is an error, not a warning followed by best-effort analysis.
 
 ## Sandbox layout
 
 ```text
-<sandbox>/
+<case-root>/revisions/<case_revision_id>/
   case.json
   analysis-case.json
   evidence-manifest.json
+  case-integrity.json
   evidence/
     participant.json
     run.json
@@ -88,7 +89,7 @@ The resolved source is checked against recorded metadata/checksums when availabl
     comparison.json
 ```
 
-`website/` and `evidence/` are read-only. Agent instruction/config files such as `AGENTS.md`, `.codex/`, `.claude/`, and OpenCode configs are excluded while materializing application source. Dependency caches, `.git` credentials, environment secrets, HF tokens, and unrelated local files are not exposed to the analysis run.
+`website/` and `evidence/` are made read-only. Agent instruction/config files such as `AGENTS.md`, `.codex/`, `.claude/`, and OpenCode configs are excluded while materializing source. Dependency caches, `.git`, HF tokens, and analysis outputs are not copied into the workspace. Codex's `read-only` sandbox prevents writes but is not a VM/filesystem namespace, so Method 1 must run on the dedicated mocked-data worker; Method 3 has no tools and is the stronger isolation baseline.
 
 Video can be omitted with `--no-video` for agents that cannot inspect it or when download cost matters. Trace and referenced screenshots are required.
 
@@ -121,7 +122,8 @@ Video can be omitted with `--no-video` for agents that cannot inspect it or when
   },
   "source_root": "website",
   "output_schema": "contract/finding.schema.json",
-  "evidence_manifest": "evidence-manifest.json"
+  "evidence_manifest": "evidence-manifest.json",
+  "integrity_manifest": "case-integrity.json"
 }
 ```
 
@@ -138,7 +140,7 @@ The agent instruction should stay short:
 5. Do not perform a generic heuristic audit or propose code/implementation changes.
 6. In source-explore mode, use source only to clarify observed behavior; do not report hypothetical source-only issues.
 
-Allowed tools are filesystem read, filename/text search, and optional non-mutating source inspection commands. Package installation, network calls, commits, uploads, and source writes are disabled for this analysis task.
+Method 1 allows filesystem reads, search, and image viewing inside a read-only Codex run; web search and inherited subprocess environment are disabled. Method 3 has no tools. Package installation, commits, uploads, and source writes are outside the analysis contract.
 
 ## Output linkage
 
@@ -152,7 +154,7 @@ Each condition's immutable `output/runs/<analysis-run-id>/<condition>/run-metada
 - resolved source commit SHA;
 - start/end time, exit status, and process output needed for failure diagnosis.
 
-Validated outputs can be copied back under the attempt's `analysis/<analysis-id>/` directory and included in a later HF synchronization. Original evidence is never modified by analysis.
+Validated outputs remain local under the case revision. Automatic synchronization into canonical attempt evidence or HF is intentionally not implemented.
 
 ## CLI design
 
@@ -165,14 +167,14 @@ python scripts/materialize_case.py --attempt-id att_01 --output .cases/att_01
 # Materialize from an exact HF dataset revision.
 python scripts/materialize_case.py \
   --hf-repo uxBench/ux-task-trace \
-  --hf-revision participant-v2 \
+  --hf-revision participant-v3-integrity \
   --attempt-id att_01 \
   --output .cases/att_01
 
-# Run both Codex comparison conditions.
-python scripts/run_agent_analysis.py \
-  --case .cases/att_01 \
-  --condition both --model gpt-5.4
+# Run the primary Method 1/3 experiment.
+python scripts/run_ux_experiment.py \
+  --case .cases/att_01 --methods 1,3 \
+  --model gpt-5.6-sol --reasoning-effort medium
 ```
 
 The runner requires an already authenticated Codex CLI. It reuses saved Codex authentication directly and does not require an API proxy.
@@ -182,18 +184,18 @@ The runner requires an already authenticated Codex CLI. It reuses saved Codex au
 1. **Identity/provenance (implemented):** participant/run/assignment/attempt IDs and frozen website provenance provide stable join keys.
 2. **Participant HF exporter (implemented):** accepted/audit export, checksums, indexes, revision selection, and sync state establish the dataset baseline.
 3. **Materializer (implemented):** the same sandbox can be built from local storage or an exact HF commit.
-4. **Compact API input v2 (implemented):** the existing multimodal input now carries stable IDs and website provenance.
-5. **Codex comparison harness (implemented):** evidence-only and source-explore runs share the same model, prompt contract, screenshot set, schema, and read-only Codex sandbox.
-6. **Output synchronization (future):** agent output is local today; attaching validated derived analysis to HF is not automatic.
+4. **Versioned case (implemented):** exact context, source, contract, evidence, and file-set hashes determine a revision ID; older revisions are retained.
+5. **Controlled harness (implemented):** Methods 1/3 are primary and Methods 2/4 are ablations under one experiment manifest.
+6. **Output synchronization (out of scope):** analysis remains derived local data and never mutates canonical evidence.
 
 Do not begin with a general-purpose agent runner. The first three steps establish stable evidence and source resolution, which both API and coding-agent experiments require.
 
 ## Validation criteria
 
-- The same accepted attempt produces equivalent `case.json` from local storage and HF.
+- A verified local export and its pinned HF copy produce the same artifact root and case revision.
 - Every evidence path and checksum is valid before agent launch.
 - The website source matches the exact recorded provenance.
-- The agent cannot write outside `output/` or access credentials/network by default.
+- Method 1 cannot write through Codex tools and Method 3 has no tools; both run without web access.
 - Every finding cites real event or attached-screenshot evidence IDs.
-- Re-materializing the same dataset revision and attempt is deterministic.
+- Re-materializing the same inputs resolves the same immutable revision without deleting prior output.
 - Analysis output records both the evidence dataset commit and website source commit.

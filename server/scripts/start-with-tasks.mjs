@@ -282,7 +282,6 @@ async function main() {
     env: {
       ...process.env,
       UI_RATER_TRIALS_CONFIG: runtimeFile,
-      UI_RATER_WEBSITE_SOURCE_DIR: website.source_dir,
       UI_RATER_WEBSITE_METADATA_FILE: metadataFile,
       UI_RATER_WEBSITE_RUN_ID: website.run_id,
       UI_RATER_DEFER_SHUTDOWN_FOR_COMPLETION_CHOICE: '1',

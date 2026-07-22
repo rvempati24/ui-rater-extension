@@ -76,7 +76,6 @@ test('participant store persists retries, repairs idempotent outcomes, and never
     }), /different content/);
 
     const session1 = '11111111-1111-4111-8111-111111111111';
-    createSession(dataDir, session1);
     const attempt1 = await store.createAttempt({
       participantId: 'P001', runId: created.run.run_id,
       assignmentId: task1.assignment_id, sessionId: session1,
@@ -95,13 +94,19 @@ test('participant store persists retries, repairs idempotent outcomes, and never
     });
     assert.equal(failed.task.status, 'pending');
     assert.equal(readJson(path.join(dataDir, 'sessions', session1, 'manifest.json')).attempt_status, 'failed');
+    await assert.rejects(store.createAttempt({
+      participantId: 'P001', runId: created.run.run_id,
+      assignmentId: task1.assignment_id, sessionId: session1,
+    }), /terminal attempt/);
 
     const session2 = '22222222-2222-4222-8222-222222222222';
-    createSession(dataDir, session2);
     const attempt2 = await store.createAttempt({
       participantId: 'P001', runId: created.run.run_id,
       assignmentId: task1.assignment_id, sessionId: session2,
     });
+    await sessions.appendSessionTraceBatch(session2, 'batch-session2', [{
+      event_id: 'event-session2-1', kind: 'click', ts: 10,
+    }]);
     assert.equal(attempt2.attempt_number, 2);
     await store.saveAttemptRecording({
       participantId: 'P001', runId: created.run.run_id, assignmentId: task1.assignment_id,
@@ -141,7 +146,6 @@ test('participant store persists retries, repairs idempotent outcomes, and never
     assert.equal(oldReplay.task.accepted_attempt_id, attempt2.attempt_id);
 
     const session3 = '33333333-3333-4333-8333-333333333333';
-    createSession(dataDir, session3);
     const attempt3 = await store.createAttempt({
       participantId: 'P001', runId: created.run.run_id,
       assignmentId: task2.assignment_id, sessionId: session3,

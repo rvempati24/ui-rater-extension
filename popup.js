@@ -1,4 +1,4 @@
-const DEFAULT_SERVER = 'https://ui-rater-production.up.railway.app';
+const DEFAULT_SERVER = 'http://127.0.0.1:3000';
 
 const $ = (id) => document.getElementById(id);
 
@@ -8,6 +8,7 @@ let state = {
   tasks: null,
   currentTaskIndex: 0,
   runId: '',
+  runCapability: '',
 };
 let operationInFlight = false;
 const ACTION_BUTTON_IDS = [
@@ -36,15 +37,40 @@ async function runExclusive(operation) {
 
 async function init() {
   const data = await chrome.storage.local.get([
-    'participantId', 'serverUrl', 'tasks', 'currentTaskIndex', 'runId',
+    'participantId', 'serverUrl', 'tasks', 'currentTaskIndex', 'runId', 'runCapability',
   ]);
   if (data.participantId && data.tasks) {
+    if (!data.runCapability) {
+      try {
+        const serverUrl = data.serverUrl || DEFAULT_SERVER;
+        const response = await fetch(
+          `${serverUrl}/api/tasks?participantId=${encodeURIComponent(data.participantId)}`
+        );
+        if (!response.ok) throw new Error(`Server returned ${response.status}`);
+        const refreshed = await response.json();
+        data.tasks = refreshed.tasks;
+        data.currentTaskIndex = refreshed.currentTaskIndex;
+        data.runId = refreshed.runId;
+        data.runCapability = refreshed.runCapability;
+        await chrome.storage.local.set({
+          tasks: data.tasks, currentTaskIndex: data.currentTaskIndex,
+          runId: data.runId, runCapability: data.runCapability,
+        });
+      } catch {
+        showSetup();
+        $('participantInput').value = data.participantId;
+        $('serverInput').value = data.serverUrl || DEFAULT_SERVER;
+        showError('setupError', 'Please reload this run from the server to refresh authorization.');
+        return;
+      }
+    }
     state = {
       participantId: data.participantId,
       serverUrl: data.serverUrl || DEFAULT_SERVER,
       tasks: data.tasks,
       currentTaskIndex: data.currentTaskIndex || 0,
       runId: data.runId || '',
+      runCapability: data.runCapability || '',
     };
     if (state.currentTaskIndex >= state.tasks.length) await showDone();
     else await showTask();
@@ -181,7 +207,8 @@ async function showDone() {
   }
   try {
     const response = await fetch(
-      `${state.serverUrl}/api/runs/${encodeURIComponent(state.runId)}/hf-upload?participantId=${encodeURIComponent(state.participantId)}`
+      `${state.serverUrl}/api/runs/${encodeURIComponent(state.runId)}/hf-upload?participantId=${encodeURIComponent(state.participantId)}`,
+      { headers: { 'Authorization': `Bearer ${state.runCapability}` } }
     );
     if (!response.ok) return;
     const status = await response.json();
@@ -190,6 +217,10 @@ async function showDone() {
       $('uploadHfBtn').disabled = true;
       $('keepLocalBtn').textContent = 'Finish and Close Localhost';
       setCompletionStatus(`Uploaded to ${status.sync.repo_id}@${status.sync.revision}. Choose Keep Local Only to finish and close localhost.`);
+    } else if (status.nothing_to_upload) {
+      $('uploadHfBtn').textContent = 'No Accepted Attempts';
+      $('uploadHfBtn').disabled = true;
+      setCompletionStatus('This run has no accepted attempts to upload. Choose Keep Local Only to finish.');
     } else if (!status.available) {
       $('uploadHfBtn').textContent = 'HF Token Not Configured';
       $('uploadHfBtn').disabled = true;
@@ -221,20 +252,25 @@ async function stopContentTracking(outcome, reason, savedTiming) {
   const timing = {
     durationMs: savedTiming?.durationMs ?? (Date.now() - (stored._originTime || Date.now())),
     viewStart: savedTiming?.viewStart || stored._viewStart || new Date().toISOString(),
+    finalizationReport: savedTiming?.finalizationReport,
+    finalFlushStatus: savedTiming?.finalFlushStatus,
+    finalFlushError: savedTiming?.finalFlushError,
   };
   const prepared = await sendRuntimeMessage({
     type: 'PREPARE_FINALIZATION', outcome, reason, ...timing,
   });
   if (!prepared?.ok) throw new Error(prepared?.error || 'Could not prepare evidence finalization.');
+  let finalizationResponse = timing.finalizationReport
+    ? { finalizationReport: timing.finalizationReport } : null;
   try {
-    if (stored._taskTabId) {
-      await new Promise((resolve, reject) => {
+    if (!finalizationResponse && stored._taskTabId) {
+      finalizationResponse = await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error('Timed out while flushing final interactions.')), 10000);
         chrome.tabs.sendMessage(stored._taskTabId, { type: 'STOP_TRACKING' }, (response) => {
           clearTimeout(timeout);
           if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
           else if (!response?.ok) reject(new Error(response?.error || 'Final interaction flush failed.'));
-          else resolve();
+          else resolve(response);
         });
       });
     }
@@ -242,6 +278,15 @@ async function stopContentTracking(outcome, reason, savedTiming) {
     if (outcome !== 'recording_problem') throw error;
     timing.finalFlushStatus = 'unavailable';
     timing.finalFlushError = error instanceof Error ? error.message : 'Final interaction flush failed.';
+  }
+  if (finalizationResponse?.finalizationReport) {
+    timing.finalizationReport = finalizationResponse.finalizationReport;
+    timing.finalFlushStatus = 'complete';
+  } else if (outcome === 'recording_problem') {
+    timing.finalFlushStatus = 'unavailable';
+    timing.finalFlushError = 'The content tracker was unavailable during recovery.';
+  } else {
+    throw new Error('The content tracker did not provide an evidence finalization report.');
   }
   await new Promise((resolve) => setTimeout(resolve, 300));
   return timing;
@@ -280,7 +325,18 @@ $('startBtn').addEventListener('click', async () => {
     const endpoint = startNewRun
       ? `${server}/api/participants/${encodeURIComponent(pid)}/runs`
       : `${server}/api/tasks?participantId=${encodeURIComponent(pid)}`;
-    const res = await fetch(endpoint, { method: startNewRun ? 'POST' : 'GET' });
+    let runCreationKey = '';
+    if (startNewRun) {
+      const pending = await chrome.storage.local.get(['_runCreationKey']);
+      runCreationKey = pending._runCreationKey || `runreq_${crypto.randomUUID()}`;
+      await chrome.storage.local.set({ _runCreationKey: runCreationKey });
+    }
+    const res = await fetch(endpoint, {
+      method: startNewRun ? 'POST' : 'GET',
+      headers: startNewRun
+        ? { 'Idempotency-Key': runCreationKey }
+        : (state.runCapability ? { 'Authorization': `Bearer ${state.runCapability}` } : undefined),
+    });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || `Server returned ${res.status}`);
@@ -293,8 +349,10 @@ $('startBtn').addEventListener('click', async () => {
       tasks: data.tasks,
       currentTaskIndex: data.currentTaskIndex || 0,
       runId: data.runId,
+      runCapability: data.runCapability,
     };
     await chrome.storage.local.set(state);
+    if (startNewRun) await chrome.storage.local.remove(['_runCreationKey']);
     if (state.currentTaskIndex >= state.tasks.length) await showDone();
     else await showTask();
   } catch (err) {
@@ -319,7 +377,10 @@ async function clearExtensionCache() {
   }
   if (!window.confirm('Clear this extension cache? Saved server traces, screenshots, and videos will not be deleted.')) return;
   await chrome.storage.local.clear();
-  state = { participantId: '', serverUrl: DEFAULT_SERVER, tasks: null, currentTaskIndex: 0, runId: '' };
+  state = {
+    participantId: '', serverUrl: DEFAULT_SERVER, tasks: null,
+    currentTaskIndex: 0, runId: '', runCapability: '',
+  };
   showSetup();
   $('participantInput').value = '';
   $('serverInput').value = DEFAULT_SERVER;
@@ -496,7 +557,10 @@ $('markProblemBtn').addEventListener('click', () => runExclusive(async () => {
 
 async function requestLauncherFinish() {
   const response = await fetch(`${state.serverUrl}/api/runs/${encodeURIComponent(state.runId)}/finish`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${state.runCapability}`,
+    },
     body: JSON.stringify({ participantId: state.participantId }),
   });
   const body = await response.json().catch(() => ({}));
@@ -506,7 +570,10 @@ async function requestLauncherFinish() {
 $('uploadHfBtn').addEventListener('click', () => runExclusive(async () => {
   setCompletionStatus('Uploading accepted attempts…');
   const response = await fetch(`${state.serverUrl}/api/runs/${encodeURIComponent(state.runId)}/hf-upload`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${state.runCapability}`,
+    },
     body: JSON.stringify({ participantId: state.participantId }),
   });
   const body = await response.json().catch(() => ({}));
@@ -537,12 +604,15 @@ $('keepLocalBtn').addEventListener('click', () => runExclusive(async () => {
 
 $('resetBtn').addEventListener('click', async () => {
   await chrome.storage.local.remove([
-    'participantId', 'tasks', 'currentTaskIndex', 'runId', '_tracking', '_sessionId',
+    'participantId', 'tasks', 'currentTaskIndex', 'runId', 'runCapability', '_tracking', '_sessionId',
     '_originTime', '_viewStart', '_taskTabId', '_runTaskTabId', '_pendingTaskTabId', '_activeSession',
     '_taskWorkflow',
     '_completedRunDecision',
   ]);
-  state = { participantId: '', serverUrl: state.serverUrl, tasks: null, currentTaskIndex: 0, runId: '' };
+  state = {
+    participantId: '', serverUrl: state.serverUrl, tasks: null,
+    currentTaskIndex: 0, runId: '', runCapability: '',
+  };
   showSetup();
 });
 

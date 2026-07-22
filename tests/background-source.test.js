@@ -11,7 +11,24 @@ test('task completion retains retryable video and only permits missing video for
   assert.match(source, /msg\.outcome === 'recording_problem'/);
   assert.match(source, /recordingResult\.retryable !== true/);
   assert.match(source, /Recording upload failed/);
-  assert.match(source, /await snapshotWriteLock/);
+  assert.match(source, /const captureLocks = new Map/);
+  assert.match(source, /await Promise\.all\(\[\.\.\.captureLocks\.values\(\)\]\)/);
+  assert.match(source, /await snapshotUploadLock/);
+  assert.match(source, /await persistCapture\(upload\)/);
+  assert.match(source, /await drainPendingCaptures\(\)/);
+  assert.match(source, /finalizationReport: msg\.finalizationReport/);
+  assert.match(source, /finalSession\.pendingSnapshotCount/);
+  const captureFunction = source.slice(
+    source.indexOf('async function captureSnapshot'),
+    source.indexOf('async function finishAttemptEvidence')
+  );
+  assert.ok(
+    captureFunction.indexOf('return withSnapshotUpload')
+      > captureFunction.indexOf('prepared = await withCaptureLock'),
+    'capture preparation must precede the independent upload queue'
+  );
+  assert.match(captureFunction, /Release the capture lock before network I\/O/);
+  assert.doesNotMatch(captureFunction, /pendingSnapshotCount:\s*Math\.max/);
 });
 
 test('background creates and propagates stable run assignment and attempt IDs', () => {
@@ -45,6 +62,7 @@ test('offscreen recorder keeps a failed upload available for retry', () => {
   assert.match(source, /type === ['"]CANCEL_RECORDING['"]/);
   assert.match(source, /code: 'upload_failed', retryable: true/);
   assert.match(source, /code: 'recorder_unavailable', retryable: false/);
+  assert.match(source, /transaction\.oncomplete = \(\) => resolve\(result\)/);
 });
 
 test('offscreen recorder permits completion retry after a successful video upload', () => {

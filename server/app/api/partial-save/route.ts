@@ -1,13 +1,45 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { withResultsLock } from '@/lib/results';
 import { InteractionEvent } from '@/types';
-import { saveSessionTrace } from '@/lib/sessions';
+import { appendSessionTraceBatch } from '@/lib/sessions';
 import { getAttempt } from '@/lib/participant-store';
+import { requireCapability } from '@/lib/capabilities';
+import { withResultsLock } from '@/lib/results';
+
+async function saveLegacyPartial(body: Record<string, unknown>) {
+  const { participantId, trialIndex, view_start, interactions } = body;
+  if (typeof participantId !== 'string' || typeof trialIndex !== 'number') {
+    return NextResponse.json({ error: 'Missing legacy partial-save IDs' }, { status: 400 });
+  }
+  if (interactions !== undefined && !Array.isArray(interactions)) {
+    return NextResponse.json({ error: 'Legacy interactions must be an array' }, { status: 400 });
+  }
+  await withResultsLock(async (data) => {
+    const trial = data[participantId]?.trials.find((candidate) => candidate.index === trialIndex);
+    if (!trial) throw new Error('Legacy trial not found');
+    if (trial.completed) return;
+    if (typeof view_start === 'string' && !trial.view_start) trial.view_start = view_start;
+    if (Array.isArray(interactions) && interactions.length >= trial.interactions.length) {
+      trial.interactions = interactions.slice(0, 100_000) as InteractionEvent[];
+    }
+  });
+  return NextResponse.json({ ok: true, mode: 'legacy-web' });
+}
 
 export async function POST(req: NextRequest) {
   try {
-    const body = JSON.parse(await req.text());
-    const { sessionId, participantId, trialIndex, view_start, interactions, runId, assignmentId, attemptId, attemptNumber } = body;
+    const raw = await req.text();
+    if (raw.length > 2 * 1024 * 1024) {
+      return NextResponse.json({ error: 'Trace batch request exceeds 2 MB' }, { status: 413 });
+    }
+    const body = JSON.parse(raw);
+    const {
+      sessionId, participantId, trialIndex, view_start, batchId, events,
+      runId, assignmentId, attemptId, attemptNumber,
+    } = body;
+
+    const hasManagedId = [sessionId, runId, assignmentId, attemptId]
+      .some((value) => value !== undefined && value !== null);
+    if (!hasManagedId) return await saveLegacyPartial(body);
 
     if (![participantId, sessionId, runId, assignmentId, attemptId].every(
       (value) => typeof value === 'string'
@@ -16,6 +48,7 @@ export async function POST(req: NextRequest) {
     }
 
     const canonical = await getAttempt(participantId, runId, assignmentId, attemptId);
+    await requireCapability(req, 'attempt', attemptId);
     if (canonical.attempt.session_id !== sessionId
       || canonical.attempt.attempt_number !== attemptNumber
       || canonical.task.position !== trialIndex) {
@@ -27,8 +60,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, ignored: 'attempt_finalized' });
     }
 
-    if (typeof sessionId === 'string' && Array.isArray(interactions)) {
-      await saveSessionTrace(sessionId, interactions as InteractionEvent[], {
+    if (typeof batchId !== 'string' || !Array.isArray(events)) {
+      return NextResponse.json({ error: 'Missing trace batchId or events' }, { status: 400 });
+    }
+    const result = await appendSessionTraceBatch(sessionId, batchId, events as InteractionEvent[], {
         participant_id: participantId,
         trial_index: trialIndex,
         view_start,
@@ -39,31 +74,11 @@ export async function POST(req: NextRequest) {
         attempt_number: attemptNumber,
         attempt_status: 'recording',
         task_status: 'pending',
-      });
-    }
-
-    await withResultsLock(async (data) => {
-      if (data[participantId]?.run_id && data[participantId].run_id !== runId) return;
-      const trial = data[participantId]?.trials
-        .find(t => t.index === trialIndex);
-      if (!trial) return;
-
-      // A delayed partial request must never overwrite a completed task.
-      if (trial.completed) return;
-
-      if (view_start && !trial.view_start) {
-        trial.view_start = view_start;
-      }
-      if (Array.isArray(interactions) && interactions.length >= trial.interactions.length) {
-        trial.interactions = interactions as InteractionEvent[];
-      }
-      if (typeof sessionId === 'string') trial.session_id = sessionId;
     });
+    return NextResponse.json({ ok: true, ...result });
   } catch (error: unknown) {
     return NextResponse.json({
       error: error instanceof Error ? error.message : 'Partial save failed',
     }, { status: 400 });
   }
-
-  return NextResponse.json({ ok: true });
 }

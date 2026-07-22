@@ -1,5 +1,7 @@
 # Participant Management v2
 
+> Historical design note. The current implementation adds cross-process single-host file locks, atomic/fsynced publication, run/attempt capabilities, idempotent creation, and integrity-v3 export. See [REPAIR_CONTRACT.md](REPAIR_CONTRACT.md).
+
 ## Status and boundary
 
 The filesystem-backed MVP is implemented. It supports multiple runs, immutable attempts, participant-selected outcomes and retry, accepted/failed/invalidated state, local admin APIs, participant-v2 export, and legacy copying. A visual admin page, confirmed hard deletion, multi-process concurrency, and SQLite remain future work.

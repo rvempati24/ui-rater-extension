@@ -3,7 +3,7 @@ param(
   [Parameter(Mandatory=$true)][string]$Output,
   [string]$ParticipantsDir = "data\participants",
   [string]$HfRepo = "",
-  [string]$HfRevision = "participant-v2",
+  [string]$HfRevision = "participant-v3-integrity",
   [string]$WebsiteSource = "",
   [switch]$NoVideo,
   [switch]$Audit

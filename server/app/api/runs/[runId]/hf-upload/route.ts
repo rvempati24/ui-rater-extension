@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRunUploadStatus, uploadCompletedRun } from '@/lib/hf-run-upload';
+import { requireCapability } from '@/lib/capabilities';
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -18,6 +19,7 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid participant or run ID' }, { status: 400 });
   }
   try {
+    await requireCapability(req, 'run', runId);
     return NextResponse.json(await getRunUploadStatus(participant, runId));
   } catch (error: unknown) {
     return NextResponse.json({
@@ -38,6 +40,7 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid participant or run ID' }, { status: 400 });
   }
   try {
+    await requireCapability(req, 'run', runId);
     return NextResponse.json({ ok: true, sync: await uploadCompletedRun(participant, runId) });
   } catch (error: unknown) {
     return NextResponse.json({

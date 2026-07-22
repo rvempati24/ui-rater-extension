@@ -1,11 +1,12 @@
-import { NextResponse } from 'next/server';
-import fs from 'fs/promises';
-import { RESULTS_PATH } from '@/lib/paths';
+import { NextRequest, NextResponse } from 'next/server';
+import { requireLocalAdmin } from '@/lib/admin-auth';
+import { withResultsLock } from '@/lib/results';
 
-const TMP_PATH = RESULTS_PATH + '.tmp';
-
-export async function POST() {
-  await fs.writeFile(TMP_PATH, '{}', 'utf-8');
-  await fs.rename(TMP_PATH, RESULTS_PATH);
+export async function POST(req: NextRequest) {
+  const denied = requireLocalAdmin(req);
+  if (denied) return denied;
+  await withResultsLock(async (data) => {
+    for (const key of Object.keys(data)) delete data[key];
+  });
   return NextResponse.json({ ok: true, message: 'results.json reset to {}' });
 }

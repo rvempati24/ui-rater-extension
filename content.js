@@ -8,6 +8,11 @@
   let viewStart = '';
   let sessionId = '';
   let saveInterval = null;
+  let batchCounter = 0;
+  let listenersAttached = false;
+  let stopping = false;
+  let flushLock = Promise.resolve();
+  let lastFinalizationReport = null;
   const snapshotTimers = new Map();
   const editActionIds = new WeakMap();
   let pendingPointerAction = null;
@@ -47,6 +52,8 @@
   function snapshotPayload(reason, details = {}) {
     return {
       type: 'CAPTURE_SNAPSHOT',
+      sessionId,
+      captureRequestId: details.captureRequestId || crypto.randomUUID(),
       reason,
       actionId: details.actionId,
       phase: details.phase,
@@ -61,21 +68,35 @@
   }
 
   function requestSnapshot(reason, details = {}) {
-    if (!tracking) return Promise.resolve({ ok: false });
-    return new Promise((resolve) => {
+    if (!tracking) return Promise.reject(new Error('Tracking is not active'));
+    return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(
         snapshotPayload(reason, details),
         (response) => {
-          const result = response || { ok: false };
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          const result = response || { ok: false, error: 'Snapshot worker did not respond' };
           if (result.skipped) {
             record('snapshot-skipped', null, {
               reason, skipped: result.skipped,
               action_id: details.actionId, phase: details.phase,
             });
           }
-          resolve(result);
+          if (!result.ok) reject(new Error(result.error || 'Snapshot capture failed'));
+          else resolve(result);
         }
       );
+    });
+  }
+
+  function requestSnapshotWithFailureRecord(reason, details = {}) {
+    void requestSnapshot(reason, details).catch((error) => {
+      record('snapshot-failed', null, {
+        reason, action_id: details.actionId, phase: details.phase,
+        error: error.message.slice(0, 300),
+      });
     });
   }
 
@@ -84,14 +105,22 @@
     if (snapshotTimers.has(timerKey)) clearTimeout(snapshotTimers.get(timerKey));
     const timer = setTimeout(() => {
       snapshotTimers.delete(timerKey);
-      requestSnapshot(reason, details);
+      requestSnapshot(reason, details).catch((error) => {
+        record('snapshot-failed', null, {
+          reason, action_id: details.actionId, phase: details.phase,
+          error: error.message.slice(0, 300),
+        });
+      });
     }, delay);
     snapshotTimers.set(timerKey, timer);
   }
 
   function record(kind, event, extra) {
     if (!tracking) return;
-    const entry = { kind, ts: ts(), url: location.href, ...extra };
+    const entry = {
+      event_id: `${sessionId || 'pending'}:${crypto.randomUUID()}`,
+      kind, ts: ts(), url: location.href, ...extra,
+    };
     if (event?.target) {
       entry.tag = tag(event.target);
       if (event.clientX !== undefined) {
@@ -111,7 +140,7 @@
     if (!target) return;
     const actionId = nextActionId('activate');
     pendingPointerAction = { actionId, target, at: Date.now() };
-    requestSnapshot('before-activate', {
+    requestSnapshotWithFailureRecord('before-activate', {
       actionId, phase: 'before', eventKind: 'activate',
     });
   }
@@ -128,6 +157,9 @@
       href: el.closest('a')?.href || '',
       action_id: actionId,
     });
+    if (target?.closest?.('a[href]') || target?.closest?.('button[type="submit"]')) {
+      void flushToBackground().catch(() => {});
+    }
     scheduleSnapshot(
       'after-click', 450,
       { actionId, phase: 'after', eventKind: 'click' },
@@ -175,7 +207,8 @@
     record('formsubmit', null, {
       action: form.action || '', method: form.method || 'get', tag: tag(form), action_id: actionId,
     });
-    requestSnapshot('before-submit', {
+    void flushToBackground().catch(() => {});
+    requestSnapshotWithFailureRecord('before-submit', {
       actionId, phase: 'before', eventKind: 'submit',
     });
     scheduleSnapshot(
@@ -195,7 +228,7 @@
       editActionIds.set(el, actionId);
       record('focus', event, { inputType: el.type || el.tagName.toLowerCase(), action_id: actionId });
       if (!pending || pending.actionId !== actionId) {
-        requestSnapshot('before-edit', {
+        requestSnapshotWithFailureRecord('before-edit', {
           actionId, phase: 'before', eventKind: 'edit',
         });
       }
@@ -231,6 +264,8 @@
   }
 
   function attachListeners() {
+    if (listenersAttached) return;
+    listenersAttached = true;
     document.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('click', onClick, true);
     document.addEventListener('contextmenu', onRightClick, true);
@@ -245,8 +280,12 @@
     document.addEventListener('focusin', onFocusIn, true);
     document.addEventListener('focusout', onFocusOut, true);
     addEventListener('resize', onResizeThrottled);
+    addEventListener('pagehide', onPageHide, true);
+    addEventListener('ui-rater:navigation', onSpaNavigation, true);
   }
   function detachListeners() {
+    if (!listenersAttached) return;
+    listenersAttached = false;
     document.removeEventListener('pointerdown', onPointerDown, true);
     document.removeEventListener('click', onClick, true);
     document.removeEventListener('contextmenu', onRightClick, true);
@@ -261,92 +300,123 @@
     document.removeEventListener('focusin', onFocusIn, true);
     document.removeEventListener('focusout', onFocusOut, true);
     removeEventListener('resize', onResizeThrottled);
+    removeEventListener('pagehide', onPageHide, true);
+    removeEventListener('ui-rater:navigation', onSpaNavigation, true);
   }
 
-  function sendInteractions(batch) {
-    return new Promise((resolve) => {
+  function onPageHide(event) {
+    if (!tracking) return;
+    record('pagehide', null, { persisted: Boolean(event?.persisted) });
+    void flushToBackground().catch(() => {});
+  }
+
+  function onSpaNavigation(event) {
+    if (!tracking) return;
+    const actionId = nextActionId('navigate');
+    record('navigate', null, {
+      method: event?.detail?.method || 'history',
+      destination_url: event?.detail?.url || location.href,
+      action_id: actionId,
+    });
+    void flushToBackground().catch(() => {});
+    scheduleSnapshot('after-navigate', 500, {
+      actionId, phase: 'after', eventKind: 'navigate',
+    }, `${actionId}:after-navigate`);
+  }
+
+  function sendInteractions(batch, batchId) {
+    return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage({
-        type: 'APPEND_INTERACTIONS', interactions: batch, viewStart, sessionId,
-      }, (response) => resolve(response || { ok: false }));
+        type: 'APPEND_INTERACTIONS', interactions: batch, viewStart, sessionId, batchId,
+      }, (response) => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else if (!response?.ok) reject(new Error(response?.error || 'Interaction save failed'));
+        else resolve(response);
+      });
     });
   }
-  async function flushToBackground() {
-    if (interactions.length === 0) return;
-    const batch = [...interactions];
-    interactions = [];
-    const response = await sendInteractions(batch);
-    if (!response?.ok) interactions.unshift(...batch);
+  function flushToBackground() {
+    const flush = async () => {
+      if (interactions.length === 0) return { ok: true, interactionCount: 0 };
+      const batch = [...interactions];
+      interactions = [];
+      const batchId = `${sessionId}:b${++batchCounter}:${crypto.randomUUID()}`;
+      try {
+        return await sendInteractions(batch, batchId);
+      } catch (error) {
+        interactions = [...batch, ...interactions];
+        throw error;
+      }
+    };
+    const next = flushLock.then(flush, flush);
+    flushLock = next.catch(() => {});
+    return next;
   }
 
   function startTracking(resumeState) {
     if (tracking) return;
     tracking = true;
+    stopping = false;
+    lastFinalizationReport = null;
     interactions = [];
     originTime = resumeState?.originTime || Date.now();
     viewStart = resumeState?.viewStart || new Date().toISOString();
     sessionId = resumeState?.sessionId || '';
     attachListeners();
     record('pageload', null, { title: document.title });
-    chrome.storage.local.set({
-      _tracking: true, _sessionId: sessionId, _originTime: originTime, _viewStart: viewStart,
-    });
-    saveInterval = setInterval(flushToBackground, 10000);
+    saveInterval = setInterval(() => { void flushToBackground().catch(() => {}); }, 10000);
     scheduleSnapshot('task-start', 400, { phase: 'after', eventKind: 'task-start' }, 'task-start');
   }
 
   async function stopTracking() {
-    if (!tracking) return;
+    if (!tracking) return {
+      ok: true, alreadyStopped: true, finalizationReport: lastFinalizationReport,
+    };
+    if (stopping) throw new Error('Evidence finalization is already in progress');
+    stopping = true;
     detachListeners();
     for (const timer of snapshotTimers.values()) clearTimeout(timer);
     snapshotTimers.clear();
     if (saveInterval) clearInterval(saveInterval);
     saveInterval = null;
-    await flushToBackground();
-    // Keep the session logically active until the final screenshot request has
-    // reached the background worker; requestSnapshot intentionally ignores an
-    // inactive session.
-    await requestSnapshot('task-end', { phase: 'after', eventKind: 'task-end' }).catch(() => {});
-    await flushToBackground();
-    tracking = false;
-    chrome.storage.local.remove(['_tracking', '_sessionId', '_originTime', '_viewStart']);
+    try {
+      const first = await flushToBackground();
+      const snapshot = await requestSnapshot('task-end', {
+        phase: 'after', eventKind: 'task-end',
+        captureRequestId: `${sessionId}:task-end`,
+      });
+      const last = await flushToBackground();
+      tracking = false;
+      lastFinalizationReport = {
+          interaction_flush: 'acknowledged',
+          task_end_snapshot: snapshot.snapshotId ? 'acknowledged' : 'skipped',
+          interaction_count: last.interactionCount ?? first.interactionCount,
+      };
+      return { ok: true, finalizationReport: lastFinalizationReport };
+    } catch (error) {
+      attachListeners();
+      saveInterval = setInterval(() => { void flushToBackground().catch(() => {}); }, 10000);
+      throw error;
+    } finally {
+      stopping = false;
+    }
   }
 
-  const originalPushState = history.pushState;
-  history.pushState = function (...args) {
-    originalPushState.apply(this, args);
-    if (tracking) {
-      const actionId = nextActionId('navigate');
-      record('navigate', null, { method: 'pushState', action_id: actionId });
-      scheduleSnapshot('after-navigate', 500, {
-        actionId, phase: 'after', eventKind: 'navigate',
-      }, `${actionId}:after-navigate`);
-    }
-  };
-  const originalReplaceState = history.replaceState;
-  history.replaceState = function (...args) {
-    originalReplaceState.apply(this, args);
-    if (tracking) {
-      const actionId = nextActionId('navigate');
-      record('navigate', null, { method: 'replaceState', action_id: actionId });
-      scheduleSnapshot('after-navigate', 500, {
-        actionId, phase: 'after', eventKind: 'navigate',
-      }, `${actionId}:after-navigate`);
-    }
-  };
   addEventListener('popstate', () => {
     if (tracking) {
       const actionId = nextActionId('navigate');
       record('navigate', null, { method: 'popstate', action_id: actionId });
+      void flushToBackground().catch(() => {});
       scheduleSnapshot('after-navigate', 500, {
         actionId, phase: 'after', eventKind: 'navigate',
       }, `${actionId}:after-navigate`);
     }
   });
 
-  chrome.storage.local.get(['_tracking', '_sessionId', '_originTime', '_viewStart'], (data) => {
-    if (data._tracking) startTracking({
-      sessionId: data._sessionId, originTime: data._originTime, viewStart: data._viewStart,
-    });
+  chrome.runtime.sendMessage({ type: 'RESUME_TRACKING' }, (response) => {
+    if (!chrome.runtime.lastError && response?.ok && response.session) {
+      startTracking(response.session);
+    }
   });
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -354,7 +424,7 @@
       startTracking(msg.session || null);
       sendResponse({ ok: true });
     } else if (msg.type === 'STOP_TRACKING') {
-      stopTracking().then(() => sendResponse({ ok: true }))
+      stopTracking().then(sendResponse)
         .catch((error) => sendResponse({ ok: false, error: error.message }));
     } else if (msg.type === 'PING') {
       sendResponse({ tracking, interactionCount: interactions.length });

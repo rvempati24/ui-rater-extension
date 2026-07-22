@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,6 +14,33 @@ SPEC.loader.exec_module(migrate_legacy)
 
 
 class MigrationTests(unittest.TestCase):
+    def test_unsafe_legacy_identifiers_are_rejected_before_writes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            data = Path(temp)
+            (data / "results.json").write_text(json.dumps({"../escape": {"trials": [{
+                "completed": False,
+            }]}}))
+            with self.assertRaisesRegex(ValueError, "participant_id"):
+                migrate_legacy.migrate(data, apply=True)
+            self.assertFalse((data / "participants").exists())
+
+    @unittest.skipIf(os.name == "nt", "symlink semantics differ on Windows")
+    def test_symlinked_legacy_session_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            data = Path(temp)
+            outside = data / "outside"
+            outside.mkdir()
+            sessions = data / "sessions"
+            sessions.mkdir()
+            session_id = "11111111-1111-4111-8111-111111111111"
+            (sessions / session_id).symlink_to(outside, target_is_directory=True)
+            (data / "results.json").write_text(json.dumps({"P005": {"trials": [{
+                "completed": True, "session_id": session_id,
+            }]}}))
+            with self.assertRaisesRegex(ValueError, "may not be a symlink"):
+                migrate_legacy.migrate(data, apply=True)
+            self.assertFalse((data / "participants").exists())
+
     def test_completed_task_without_session_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             data = Path(temp)

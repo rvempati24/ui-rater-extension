@@ -1,9 +1,8 @@
 import fs from 'fs/promises';
-import path from 'path';
 import type { ParticipantData, Trial, ResultsStore } from '@/types';
 import { RESULTS_PATH } from './paths.ts';
-
-const TMP_PATH = RESULTS_PATH + '.tmp';
+import { writeJsonAtomic } from './atomic-file.ts';
+import { withFileLock } from './file-lock.ts';
 
 async function readResults(): Promise<ResultsStore> {
   try {
@@ -16,25 +15,16 @@ async function readResults(): Promise<ResultsStore> {
 }
 
 async function writeResults(data: ResultsStore): Promise<void> {
-  await fs.mkdir(path.dirname(RESULTS_PATH), { recursive: true });
-  await fs.writeFile(TMP_PATH, JSON.stringify(data, null, 2), 'utf-8');
-  await fs.rename(TMP_PATH, RESULTS_PATH);
+  await writeJsonAtomic(RESULTS_PATH, data);
 }
 
-let writeLock = Promise.resolve();
-
 export function withResultsLock<T>(fn: (data: ResultsStore) => Promise<T>): Promise<T> {
-  const next = writeLock.then(async () => {
+  return withFileLock('legacy-results', async () => {
     const data = await readResults();
     const result = await fn(data);
     await writeResults(data);
     return result;
   });
-  writeLock = next.then(
-    () => {},
-    () => {}
-  );
-  return next;
 }
 
 export async function getParticipantTrials(

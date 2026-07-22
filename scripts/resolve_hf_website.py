@@ -11,6 +11,12 @@ from pathlib import Path, PurePosixPath
 import random
 import shutil
 import sys
+import uuid
+
+try:
+    from scripts.ux_evidence import atomic_write_json
+except ModuleNotFoundError:
+    from ux_evidence import atomic_write_json
 
 
 DEFAULT_REPO = "uxBench/website-generation"
@@ -55,6 +61,33 @@ def load_hf():
     return HfApi, snapshot_download
 
 
+def replace_tree(source: Path, destination: Path) -> None:
+    """Publish a complete directory without retaining files from an older run."""
+    source = source.resolve()
+    destination = destination.resolve()
+    if source == destination or source in destination.parents or destination in source.parents:
+        raise ValueError("deployment directory must not overlap the downloaded source")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    stage = destination.parent / f".{destination.name}.stage-{uuid.uuid4().hex}"
+    backup = destination.parent / f".{destination.name}.backup-{uuid.uuid4().hex}"
+    try:
+        shutil.copytree(source, stage)
+        if destination.exists():
+            destination.rename(backup)
+        stage.rename(destination)
+        if backup.exists():
+            shutil.rmtree(backup)
+    except BaseException:
+        if not destination.exists() and backup.exists():
+            backup.rename(destination)
+        raise
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage)
+        if backup.exists() and destination.exists():
+            shutil.rmtree(backup)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-id", default=DEFAULT_REPO)
@@ -73,20 +106,22 @@ def main() -> int:
     # when the operator explicitly supplies HF_TOKEN.
     token: str | bool = os.getenv("HF_TOKEN") or False
     api = HfApi(token=token)
+    info = api.dataset_info(args.repo_id, revision=args.revision, token=token)
+    pinned_revision = info.sha
 
     if args.website:
         selected = "/".join(split_run_path(args.website))
         selected_model, selected_site, run_id = split_run_path(selected)
         entries = list(api.list_repo_tree(
             args.repo_id, path_in_repo=selected, recursive=True,
-            revision=args.revision, repo_type="dataset", token=token,
+            revision=pinned_revision, repo_type="dataset", token=token,
         ))
         paths = [entry.path for entry in entries]
         if f"{selected}/trials-config.json" not in paths:
             raise SystemExit(f"Selected website has no trials-config.json: {selected}")
     else:
         root_entries = list(api.list_repo_tree(
-            args.repo_id, recursive=False, revision=args.revision,
+            args.repo_id, recursive=False, revision=pinned_revision,
             repo_type="dataset", token=token,
         ))
         models = sorted(
@@ -99,22 +134,21 @@ def main() -> int:
         for model_name in models:
             all_paths.extend(entry.path for entry in api.list_repo_tree(
                 args.repo_id, path_in_repo=model_name, recursive=True,
-                revision=args.revision, repo_type="dataset", token=token,
+                revision=pinned_revision, repo_type="dataset", token=token,
             ))
         selected = choose_run(discover_runs(all_paths, args.model, args.site), args.seed)
         selected_model, selected_site, run_id = split_run_path(selected)
         entries = list(api.list_repo_tree(
             args.repo_id, path_in_repo=selected, recursive=True,
-            revision=args.revision, repo_type="dataset", token=token,
+            revision=pinned_revision, repo_type="dataset", token=token,
         ))
         paths = [entry.path for entry in entries]
 
-    info = api.dataset_info(args.repo_id, revision=args.revision, token=token)
     cache_dir = Path(args.cache_dir).resolve()
     snapshot_download(
         repo_id=args.repo_id,
         repo_type="dataset",
-        revision=args.revision,
+        revision=pinned_revision,
         allow_patterns=[f"{selected}/**"],
         local_dir=str(cache_dir),
         token=token,
@@ -127,8 +161,7 @@ def main() -> int:
 
     deployment = Path(args.deploy_dir).resolve() / run_id
     if not args.no_deploy:
-        deployment.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(dist_dir, deployment, dirs_exist_ok=True)
+        replace_tree(dist_dir, deployment)
 
     existing_metadata = [
         str(PurePosixPath(value).relative_to(selected))
@@ -160,7 +193,7 @@ def main() -> int:
         "files": files,
     }
     metadata_file = source_dir / "ui-rater-website.json"
-    metadata_file.write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write_json(metadata_file, metadata)
     compact = {key: value for key, value in metadata.items() if key != "files"}
     compact["file_count"] = len(files)
     compact["metadata_file"] = str(metadata_file)

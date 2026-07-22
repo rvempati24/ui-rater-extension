@@ -1,6 +1,6 @@
 importScripts('task-session.js');
 
-const DEFAULT_SERVER = 'https://ui-rater-production.up.railway.app';
+const DEFAULT_SERVER = 'http://127.0.0.1:3000';
 const ACTIVE_SESSION_KEY = '_activeSession';
 const WORKFLOW_KEY = '_taskWorkflow';
 // A task normally produces paired before/after images for important actions.
@@ -10,8 +10,48 @@ const RESERVED_TASK_END_SNAPSHOTS = 1;
 const SNAPSHOT_DEBOUNCE_MS = 400;
 
 let sessionWriteLock = Promise.resolve();
-let snapshotWriteLock = Promise.resolve();
+let snapshotUploadLock = Promise.resolve();
 let workflowOperationLock = Promise.resolve();
+const captureLocks = new Map();
+
+function openCaptureDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('ui-rater-captures-v1', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('captures', { keyPath: 'captureRequestId' });
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function captureStore(mode, operation) {
+  const db = await openCaptureDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = db.transaction('captures', mode);
+      const request = operation(transaction.objectStore('captures'));
+      let result;
+      request.onsuccess = () => { result = request.result; };
+      request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => resolve(result);
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error || new Error('Capture transaction aborted'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function persistCapture(record) {
+  await captureStore('readwrite', (store) => store.put(record));
+}
+
+async function deleteCapture(captureRequestId) {
+  await captureStore('readwrite', (store) => store.delete(captureRequestId));
+}
+
+async function pendingCaptures() {
+  return captureStore('readonly', (store) => store.getAll());
+}
 
 function withWorkflowOperation(fn) {
   const next = workflowOperationLock.then(fn, fn);
@@ -91,6 +131,17 @@ async function sendTrackingMessage(tabId, message) {
   }
 }
 
+async function installNavigationBridge(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId }, files: ['navigation-bridge.js'], world: 'MAIN',
+    });
+  } catch {
+    // History instrumentation is supplementary; trace ownership and ordinary
+    // DOM event capture remain active if a page rejects MAIN-world injection.
+  }
+}
+
 async function openPendingTask(createOptions) {
   const taskTab = await chrome.tabs.create(createOptions);
   if (!Number.isInteger(taskTab?.id)) throw new Error('Chrome did not create a task tab');
@@ -106,7 +157,7 @@ async function reusePendingTask(tabId, url) {
 
 async function createSession() {
   const data = await chrome.storage.local.get([
-    'participantId', 'serverUrl', 'runId', 'tasks', 'currentTaskIndex', WORKFLOW_KEY,
+    'participantId', 'serverUrl', 'runId', 'runCapability', 'tasks', 'currentTaskIndex', WORKFLOW_KEY,
   ]);
   const task = data.tasks?.[data.currentTaskIndex || 0];
   if (!data.participantId || !data.runId || !task?.assignment_id) {
@@ -120,7 +171,10 @@ async function createSession() {
   const response = await fetch(
     `${data.serverUrl || DEFAULT_SERVER}/api/assignments/${encodeURIComponent(task.assignment_id)}/attempts`,
     {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${data.runCapability || ''}`,
+      },
       body: JSON.stringify({ participantId: data.participantId, runId: data.runId, sessionId: session.sessionId }),
     }
   );
@@ -129,6 +183,7 @@ async function createSession() {
   return {
     ...session, runId: data.runId, assignmentId: task.assignment_id,
     attemptId: body.attempt.attempt_id, attemptNumber: body.attempt.attempt_number,
+    attemptCapability: body.attemptCapability,
   };
 }
 
@@ -183,7 +238,10 @@ async function startTaskFlow(msg) {
     const result = await UiRaterTaskSession.beginRecordingOnTab({
     startRecording,
     createSession,
-    storeSession: async ({ sessionId, originTime, viewStart, taskTabId, runId, assignmentId, attemptId, attemptNumber }) => {
+    storeSession: async ({
+      sessionId, originTime, viewStart, taskTabId, runId, assignmentId,
+      attemptId, attemptNumber, attemptCapability,
+    }) => {
       const taskTab = await chrome.tabs.get(taskTabId);
       await chrome.storage.local.set({
         _tracking: true,
@@ -202,17 +260,21 @@ async function startTaskFlow(msg) {
           nextEventSeq: 1,
           snapshotCount: 0,
           lastSnapshotAt: 0,
-          runId, assignmentId, attemptId, attemptNumber,
+          runId, assignmentId, attemptId, attemptNumber, attemptCapability,
         },
         [WORKFLOW_KEY]: {
           phase: 'recording', sessionId, runId, assignmentId, attemptId, attemptNumber,
+          attemptCapability,
           updatedAt: new Date().toISOString(),
         },
       });
     },
-    startTracking: (tabId, activeSession) => sendTrackingMessage(tabId, {
-      type: 'START_TRACKING', session: activeSession,
-    }),
+    startTracking: async (tabId, activeSession) => {
+      await installNavigationBridge(tabId);
+      return sendTrackingMessage(tabId, {
+        type: 'START_TRACKING', session: activeSession,
+      });
+    },
     stopTracking: (tabId) => sendTabMessage(tabId, { type: 'STOP_TRACKING' }),
     cancelRecording,
     clearSession: async (failedSession) => {
@@ -220,7 +282,10 @@ async function startTaskFlow(msg) {
       let invalidated = false;
       if (failedSession?.attemptId) {
         const response = await fetch(`${data.serverUrl || DEFAULT_SERVER}/api/attempts/${encodeURIComponent(failedSession.attemptId)}/outcome`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${failedSession.attemptCapability || ''}`,
+          },
           body: JSON.stringify({
             participantId: data.participantId, runId: failedSession.runId,
             assignmentId: failedSession.assignmentId, outcome: 'recording_problem',
@@ -252,6 +317,7 @@ async function startTaskFlow(msg) {
           participantId: (await chrome.storage.local.get(['participantId'])).participantId,
           runId: failed.runId, assignmentId: failed.assignmentId, attemptId: failed.attemptId,
           attemptNumber: failed.attemptNumber, sessionId: failed.sessionId,
+          attemptCapability: failed.attemptCapability,
         };
         await chrome.storage.local.set({ [WORKFLOW_KEY]: {
           phase: 'submitting_outcome', ...attemptIdentity,
@@ -272,112 +338,271 @@ function withSessionWrite(fn) {
   return next;
 }
 
-function withSnapshotWrite(fn) {
-  const next = snapshotWriteLock.then(fn);
-  snapshotWriteLock = next.catch(() => {});
+function withSnapshotUpload(fn) {
+  const next = snapshotUploadLock.then(fn, fn);
+  snapshotUploadLock = next.catch(() => {});
   return next;
 }
 
-async function appendInteractions(msg) {
+function withCaptureLock(windowId, fn) {
+  const previous = captureLocks.get(windowId) || Promise.resolve();
+  const next = previous.then(fn, fn);
+  const settled = next.then(() => {}, () => {});
+  captureLocks.set(windowId, settled);
+  return next.finally(() => {
+    if (captureLocks.get(windowId) === settled) captureLocks.delete(windowId);
+  });
+}
+
+async function activeTabId(windowId) {
+  const tabs = await chrome.tabs.query({ active: true, windowId });
+  return tabs[0]?.id;
+}
+
+async function uploadCapture(record) {
+  const response = await fetch(`${record.serverUrl}/api/sessions/${record.sessionId}/snapshot`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${record.attemptCapability || ''}`,
+    },
+    body: JSON.stringify(record.body),
+  });
+  const responseBody = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(responseBody.error || `Snapshot upload failed: ${response.status}`);
+  const snapshotId = responseBody.snapshot?.snapshot_id;
+  await withSessionWrite(async () => {
+    const latestData = await chrome.storage.local.get([ACTIVE_SESSION_KEY]);
+    const latest = latestData[ACTIVE_SESSION_KEY];
+    if (!latest || latest.sessionId !== record.sessionId) return;
+    await chrome.storage.local.set({
+      [ACTIVE_SESSION_KEY]: {
+        ...latest,
+        snapshotCount: Math.max(latest.snapshotCount || 0, Number(snapshotId?.slice(1)) || 0),
+        pendingSnapshotCount: Math.max(0, (latest.pendingSnapshotCount || 1) - 1),
+        captureFailures: (latest.captureFailures || []).filter(
+          (failure) => failure.capture_request_id !== record.captureRequestId
+        ),
+      },
+    });
+  });
+  // Keep the durable queue entry until both the remote acknowledgement and
+  // the local projection update complete. Re-uploading is idempotent.
+  await deleteCapture(record.captureRequestId);
+  return { ok: true, snapshotId, capturedTs: record.capturedTs };
+}
+
+async function drainPendingCaptures() {
+  const records = await pendingCaptures();
+  for (const record of records) await withSnapshotUpload(() => uploadCapture(record));
+}
+
+async function postTraceBatch(data, session, batchId, events) {
+  const serverUrl = data.serverUrl || DEFAULT_SERVER;
+  const response = await fetch(`${serverUrl}/api/partial-save`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${session.attemptCapability || ''}`,
+    },
+    body: JSON.stringify({
+      sessionId: session.sessionId,
+      participantId: data.participantId,
+      trialIndex: (data.currentTaskIndex || 0) + 1,
+      view_start: session.viewStart,
+      batchId,
+      events,
+      runId: session.runId,
+      assignmentId: session.assignmentId,
+      attemptId: session.attemptId,
+      attemptNumber: session.attemptNumber,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || `Partial save failed: ${response.status}`);
+  return body;
+}
+
+async function reconcileTraceWithServer(data, session) {
+  const events = Array.isArray(session.interactions) ? session.interactions : [];
+  const chunkSize = 500;
+  for (let start = 0; start < events.length; start += chunkSize) {
+    const chunk = events.slice(start, start + chunkSize);
+    const last = chunk.at(-1)?.event_id || chunk.at(-1)?.seq || start + chunk.length;
+    const batchId = `${session.sessionId}:reconcile:${start}:${chunk.length}:${String(last).slice(-48)}`;
+    await postTraceBatch(data, session, batchId, chunk);
+  }
+}
+
+async function appendInteractions(msg, sender) {
   return withSessionWrite(async () => {
     const data = await chrome.storage.local.get([
       ACTIVE_SESSION_KEY, 'participantId', 'serverUrl', 'currentTaskIndex', 'tasks',
     ]);
     const session = data[ACTIVE_SESSION_KEY];
     if (!session || !Array.isArray(msg.interactions)) return { ok: false, error: 'No active session' };
-
-    for (const event of msg.interactions) {
-      session.interactions.push({ ...event, seq: session.nextEventSeq++ });
+    if (sender.tab?.id !== session.taskTabId || msg.sessionId !== session.sessionId) {
+      return { ok: false, error: 'Interaction batch does not belong to the active task tab/session' };
     }
+    if (typeof msg.batchId !== 'string' || !msg.batchId.startsWith(`${session.sessionId}:`)) {
+      return { ok: false, error: 'Interaction batch has no valid batchId' };
+    }
+
+    const interactions = Array.isArray(session.interactions) ? session.interactions : [];
+    const known = new Set(interactions.map((event) => event.event_id).filter(Boolean));
+    let nextEventSeq = Number.isInteger(session.nextEventSeq)
+      ? session.nextEventSeq : interactions.reduce(
+        (highest, event) => Math.max(highest, Number(event.seq) || 0), 0
+      ) + 1;
+    for (const event of msg.interactions) {
+      if (event.event_id && known.has(event.event_id)) continue;
+      if (event.event_id) known.add(event.event_id);
+      interactions.push({ ...event, seq: nextEventSeq++ });
+    }
+    session.interactions = interactions;
+    session.nextEventSeq = nextEventSeq;
+    // Persist locally before the network acknowledgement. If a navigation
+    // destroys the content script, the service worker still retains the batch.
     await chrome.storage.local.set({ [ACTIVE_SESSION_KEY]: session });
 
     if (data.participantId && data.tasks) {
-      const serverUrl = data.serverUrl || DEFAULT_SERVER;
-      fetch(`${serverUrl}/api/partial-save`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: session.sessionId,
-          participantId: data.participantId,
-          trialIndex: (data.currentTaskIndex || 0) + 1,
-          view_start: session.viewStart,
-          interactions: session.interactions,
-          runId: session.runId,
-          assignmentId: session.assignmentId,
-          attemptId: session.attemptId,
-          attemptNumber: session.attemptNumber,
-        }),
-      }).catch(() => {});
+      await postTraceBatch(data, session, msg.batchId, msg.interactions);
     }
     return { ok: true, interactionCount: session.interactions.length };
   });
 }
 
-async function captureSnapshot(msg, sender) {
-  return withSnapshotWrite(async () => {
-    const data = await chrome.storage.local.get([ACTIVE_SESSION_KEY, 'serverUrl']);
+async function rememberCaptureFailure(sessionId, captureRequestId, reason, error) {
+  await withSessionWrite(async () => {
+    const data = await chrome.storage.local.get([ACTIVE_SESSION_KEY]);
     const session = data[ACTIVE_SESSION_KEY];
-    if (!session) return { ok: false, error: 'No active session' };
-    if (sender.tab?.id !== session.taskTabId) return { ok: false, error: 'Snapshot came from another tab' };
-    if (!sender.tab.active) return { ok: false, error: 'Task tab is not active' };
-
-    const now = Date.now();
-    const isTaskEnd = msg.reason === 'task-end';
-    const admission = UiRaterTaskSession.snapshotAdmission(
-      session.snapshotCount, MAX_SNAPSHOTS, RESERVED_TASK_END_SNAPSHOTS, isTaskEnd
+    if (!session || session.sessionId !== sessionId) return;
+    const failures = (session.captureFailures || []).filter(
+      (failure) => failure.capture_request_id !== captureRequestId
     );
-    if (!admission.allowed) return { ok: true, skipped: admission.reason };
-    const isActionPair = msg.phase === 'before' || msg.phase === 'after';
-    if (now - session.lastSnapshotAt < SNAPSHOT_DEBOUNCE_MS
-      && msg.reason !== 'task-end' && !isActionPair) {
-      return { ok: true, skipped: 'debounced' };
-    }
-
-    const captureStartedAt = Date.now();
-    const sessionOriginTime = Number.isFinite(session.originTime)
-      ? session.originTime : captureStartedAt - (Number.isFinite(msg.ts) ? msg.ts : 0);
-    const captureStartedTs = Math.max(0, captureStartedAt - sessionOriginTime);
-    const imageDataUrl = await chrome.tabs.captureVisibleTab(session.windowId, {
-      format: 'jpeg', quality: 70,
+    failures.push({
+      capture_request_id: captureRequestId,
+      reason,
+      error: String(error?.message || error).slice(0, 300),
     });
-    const capturedAt = Date.now();
-    const capturedTs = Math.max(0, capturedAt - sessionOriginTime);
-    const snapshotId = `s${String(session.snapshotCount + 1).padStart(4, '0')}`;
-    const serverUrl = data.serverUrl || DEFAULT_SERVER;
-    const response = await fetch(`${serverUrl}/api/sessions/${session.sessionId}/snapshot`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        snapshotId,
-        imageDataUrl,
-        reason: msg.reason || 'state-change',
-        actionId: msg.actionId,
-        phase: msg.phase,
-        eventKind: msg.eventKind,
-        ts: capturedTs,
-        requestedTs: msg.ts,
-        captureStartedTs,
-        captureLatencyMs: Math.max(0, capturedAt - captureStartedAt),
-        timingGuarantee: msg.phase === 'before' ? 'best-effort-before' : 'observed-state',
-        url: msg.url,
-        title: msg.title,
-        viewport: msg.viewport,
-        scroll: msg.scroll,
-        elements: msg.elements || [],
-      }),
+    await chrome.storage.local.set({
+      [ACTIVE_SESSION_KEY]: { ...session, captureFailures: failures.slice(-20) },
     });
-    if (!response.ok) throw new Error(`Snapshot upload failed: ${response.status}`);
+  });
+}
 
-    await withSessionWrite(async () => {
-      const latestData = await chrome.storage.local.get([ACTIVE_SESSION_KEY]);
-      const updated = UiRaterTaskSession.mergeSnapshotProgress(
-        latestData[ACTIVE_SESSION_KEY], session.sessionId, session.snapshotCount + 1, now
+async function captureSnapshot(msg, sender) {
+  const initial = await chrome.storage.local.get([ACTIVE_SESSION_KEY]);
+  const initialSession = initial[ACTIVE_SESSION_KEY];
+  if (!initialSession) return { ok: false, error: 'No active session' };
+  const captureRequestId = msg.captureRequestId || crypto.randomUUID();
+  let prepared;
+  try {
+    prepared = await withCaptureLock(initialSession.windowId, async () => {
+      const data = await chrome.storage.local.get([
+        ACTIVE_SESSION_KEY, 'serverUrl', 'participantId',
+      ]);
+      const session = data[ACTIVE_SESSION_KEY];
+      if (!session) return { response: { ok: false, error: 'No active session' } };
+      if (msg.sessionId !== session.sessionId || sender.tab?.id !== session.taskTabId) {
+        return { response: { ok: false, error: 'Snapshot came from another tab/session' } };
+      }
+      if (await activeTabId(session.windowId) !== session.taskTabId) {
+        throw new Error('Task tab is not active');
+      }
+
+      const now = Date.now();
+      const isTaskEnd = msg.reason === 'task-end';
+      const admission = UiRaterTaskSession.snapshotAdmission(
+        (session.snapshotCount || 0) + (session.pendingSnapshotCount || 0),
+        MAX_SNAPSHOTS, RESERVED_TASK_END_SNAPSHOTS, isTaskEnd
       );
-      // Never resurrect a finalized session or overwrite interactions that arrived
-      // while the screenshot upload was in flight.
-      if (updated) await chrome.storage.local.set({ [ACTIVE_SESSION_KEY]: updated });
+      if (!admission.allowed) return { response: { ok: true, skipped: admission.reason } };
+      const isActionPair = msg.phase === 'before' || msg.phase === 'after';
+      if (now - session.lastSnapshotAt < SNAPSHOT_DEBOUNCE_MS
+        && msg.reason !== 'task-end' && !isActionPair) {
+        return { response: { ok: true, skipped: 'debounced' } };
+      }
+
+      const captureStartedAt = Date.now();
+      const sessionOriginTime = Number.isFinite(session.originTime)
+        ? session.originTime : captureStartedAt - (Number.isFinite(msg.ts) ? msg.ts : 0);
+      const captureStartedTs = Math.max(0, captureStartedAt - sessionOriginTime);
+      const imageDataUrl = await chrome.tabs.captureVisibleTab(session.windowId, {
+        format: 'jpeg', quality: 70,
+      });
+      const capturedAt = Date.now();
+      if (await activeTabId(session.windowId) !== session.taskTabId) {
+        throw new Error('Active tab changed during screenshot capture; image was discarded');
+      }
+      const capturedTs = Math.max(0, capturedAt - sessionOriginTime);
+      const upload = {
+        captureRequestId,
+        sessionId: session.sessionId,
+        serverUrl: data.serverUrl || DEFAULT_SERVER,
+        attemptCapability: session.attemptCapability,
+        capturedTs,
+        reason: msg.reason,
+        body: {
+          captureRequestId,
+          participantId: data.participantId,
+          runId: session.runId,
+          assignmentId: session.assignmentId,
+          attemptId: session.attemptId,
+          imageDataUrl,
+          reason: msg.reason || 'state-change',
+          actionId: msg.actionId,
+          phase: msg.phase,
+          eventKind: msg.eventKind,
+          ts: capturedTs,
+          requestedTs: msg.ts,
+          captureStartedTs,
+          captureLatencyMs: Math.max(0, capturedAt - captureStartedAt),
+          timingGuarantee: msg.phase === 'before' ? 'best-effort-before' : 'observed-state',
+          url: msg.url,
+          title: msg.title,
+          viewport: msg.viewport,
+          scroll: msg.scroll,
+          elements: msg.elements || [],
+        },
+      };
+      // Durably queue the image before it becomes eligible for upload.
+      await persistCapture(upload);
+      await withSessionWrite(async () => {
+        const latestData = await chrome.storage.local.get([ACTIVE_SESSION_KEY]);
+        const latest = latestData[ACTIVE_SESSION_KEY];
+        if (!latest || latest.sessionId !== session.sessionId) {
+          throw new Error('Attempt finalized while screenshot capture was in progress');
+        }
+        await chrome.storage.local.set({
+          [ACTIVE_SESSION_KEY]: {
+            ...latest,
+            pendingSnapshotCount: (latest.pendingSnapshotCount || 0) + 1,
+            lastSnapshotAt: Math.max(latest.lastSnapshotAt || 0, now),
+          },
+        });
+      });
+      return { upload, sessionId: session.sessionId };
     });
-    return { ok: true, snapshotId, capturedTs };
+  } catch (error) {
+    await rememberCaptureFailure(
+      initialSession.sessionId, captureRequestId, msg.reason, error
+    ).catch(() => {});
+    throw error;
+  }
+  if (prepared.response) return prepared.response;
+
+  // Release the capture lock before network I/O. Uploads remain serialized,
+  // but the next important action can capture the correct active tab promptly.
+  return withSnapshotUpload(async () => {
+    try {
+      return await uploadCapture(prepared.upload);
+    } catch (error) {
+      await rememberCaptureFailure(
+        prepared.sessionId, captureRequestId, msg.reason, error
+      ).catch(() => {});
+      throw error;
+    }
   });
 }
 
@@ -391,6 +616,7 @@ async function finishAttemptEvidence(msg) {
   const serverUrl = data.serverUrl || DEFAULT_SERVER;
   const taskIndex = (data.currentTaskIndex || 0) + 1;
   const participantId = data.participantId;
+  await drainPendingCaptures();
   await setWorkflow({
     phase: 'finalizing_evidence',
     sessionId: session.sessionId,
@@ -404,11 +630,13 @@ async function finishAttemptEvidence(msg) {
     durationMs: msg.durationMs || 0,
     finalFlushStatus: msg.finalFlushStatus,
     finalFlushError: msg.finalFlushError,
+    finalizationReport: msg.finalizationReport,
     lastError: undefined,
   });
 
   const managed = {
     runId: session.runId, assignmentId: session.assignmentId, attemptId: session.attemptId,
+    attemptCapability: session.attemptCapability,
   };
   const recordingResult = await stopRecording(serverUrl, participantId, taskIndex, managed);
   let recordingStatus = 'saved';
@@ -425,13 +653,33 @@ async function finishAttemptEvidence(msg) {
     }
   }
 
-  await snapshotWriteLock;
+  await Promise.all([...captureLocks.values()]);
+  await snapshotUploadLock;
   await sessionWriteLock;
   const latest = await chrome.storage.local.get([ACTIVE_SESSION_KEY]);
   const finalSession = latest[ACTIVE_SESSION_KEY] || session;
+  await reconcileTraceWithServer(data, finalSession);
+  if (msg.finalFlushStatus !== 'unavailable' && msg.finalizationReport?.interaction_flush !== 'acknowledged') {
+    throw new Error('Final interaction batch was not acknowledged');
+  }
+  if (msg.finalFlushStatus !== 'unavailable' && msg.finalizationReport?.task_end_snapshot !== 'acknowledged') {
+    throw new Error('Final task screenshot was not acknowledged');
+  }
+  if ((finalSession.captureFailures || []).length && msg.outcome !== 'recording_problem') {
+    throw new Error('One or more important screenshots failed; mark a recording problem or retry finalization');
+  }
+  if ((finalSession.pendingSnapshotCount || 0) > 0 && msg.outcome !== 'recording_problem') {
+    throw new Error('One or more captured screenshots remain unacknowledged');
+  }
+  if (finalSession.integrityStatus === 'unsupported_multi_tab' && msg.outcome !== 'recording_problem') {
+    throw new Error('This attempt opened another tab and is unsupported; mark a recording problem');
+  }
   const res = await fetch(`${serverUrl}/api/complete-task`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${finalSession.attemptCapability || ''}`,
+    },
     body: JSON.stringify({
       sessionId: finalSession.sessionId,
       participantId,
@@ -447,6 +695,8 @@ async function finishAttemptEvidence(msg) {
       recording_error: recordingError,
       final_flush_status: msg.finalFlushStatus || 'complete',
       final_flush_error: msg.finalFlushError,
+      finalization_report: msg.finalizationReport,
+      intended_outcome: msg.outcome,
     }),
   });
   const body = await res.json().catch(() => ({}));
@@ -462,13 +712,15 @@ async function finishAttemptEvidence(msg) {
     attemptId: finalSession.attemptId,
     attemptNumber: finalSession.attemptNumber,
     sessionId: finalSession.sessionId,
+    attemptCapability: finalSession.attemptCapability,
   };
   if (!body.pendingOutcome) {
     let refreshed = null;
     try {
       const taskResponse = await fetch(
         `${serverUrl}/api/tasks?participantId=${encodeURIComponent(participantId)}`
-          + `&runId=${encodeURIComponent(finalSession.runId)}`
+          + `&runId=${encodeURIComponent(finalSession.runId)}`,
+        { headers: { 'Authorization': `Bearer ${(await chrome.storage.local.get(['runCapability'])).runCapability || ''}` } }
       );
       if (taskResponse.ok) refreshed = await taskResponse.json();
     } catch { /* the canonical outcome is already saved */ }
@@ -540,7 +792,10 @@ async function submitAttemptOutcome(outcome, reason) {
   });
   const serverUrl = data.serverUrl || DEFAULT_SERVER;
   const response = await fetch(`${serverUrl}/api/attempts/${encodeURIComponent(pending.attemptId)}/outcome`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${pending.attemptCapability || ''}`,
+    },
     body: JSON.stringify({
       participantId: pending.participantId,
       runId: pending.runId,
@@ -614,11 +869,31 @@ async function setRetryChoice(reason) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'APPEND_INTERACTIONS') {
-    appendInteractions(msg).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+    appendInteractions(msg, sender).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
   if (msg.type === 'CAPTURE_SNAPSHOT') {
     captureSnapshot(msg, sender).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (msg.type === 'RESUME_TRACKING') {
+    chrome.storage.local.get([ACTIVE_SESSION_KEY, WORKFLOW_KEY]).then((data) => {
+      const session = data[ACTIVE_SESSION_KEY];
+      const allowed = session && data[WORKFLOW_KEY]?.phase === 'recording'
+        && sender.tab?.id === session.taskTabId;
+      if (!allowed) {
+        sendResponse({ ok: false, error: 'This tab does not own the active task session' });
+        return;
+      }
+      installNavigationBridge(session.taskTabId).then(() => sendResponse({
+          ok: true,
+          session: {
+            sessionId: session.sessionId,
+            originTime: session.originTime,
+            viewStart: session.viewStart,
+          },
+        }));
+    }).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
   if (msg.type === 'START_TASK_FLOW') {
@@ -654,8 +929,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return false;
 });
 
+chrome.tabs.onCreated.addListener((tab) => {
+  if (!Number.isInteger(tab.openerTabId)) return;
+  withSessionWrite(async () => {
+    const data = await chrome.storage.local.get([ACTIVE_SESSION_KEY, WORKFLOW_KEY]);
+    const session = data[ACTIVE_SESSION_KEY];
+    if (!session || tab.openerTabId !== session.taskTabId) return;
+    const updated = {
+      ...session,
+      integrityStatus: 'unsupported_multi_tab',
+      integrityDetails: {
+        openedTabId: tab.id,
+        detectedAt: new Date().toISOString(),
+      },
+    };
+    await chrome.storage.local.set({
+      [ACTIVE_SESSION_KEY]: updated,
+      [WORKFLOW_KEY]: {
+        ...(data[WORKFLOW_KEY] || {}),
+        integrityStatus: 'unsupported_multi_tab',
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  }).catch(() => {});
+});
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(['serverUrl'], (data) => {
     if (!data.serverUrl) chrome.storage.local.set({ serverUrl: DEFAULT_SERVER });
   });
+  void drainPendingCaptures().catch(() => {});
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  void drainPendingCaptures().catch(() => {});
 });

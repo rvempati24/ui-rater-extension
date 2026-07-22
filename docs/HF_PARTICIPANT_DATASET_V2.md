@@ -1,5 +1,7 @@
 # Hugging Face Participant Dataset v2
 
+> Historical design note. New exports use `participant-v3-integrity`, detached artifact manifests, immutable attempt roots, atomic staging, and pinned-commit reconciliation. See [REPAIR_CONTRACT.md](REPAIR_CONTRACT.md) and the current README for commands.
+
 ## Decision
 
 The implemented exporter layout for [`uxBench/ux-task-trace`](https://huggingface.co/datasets/uxBench/ux-task-trace) is participant-first. It replaces the earlier `model/website/run/attempt/user/session` hierarchy on the isolated `participant-v2` revision.

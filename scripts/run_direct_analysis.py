@@ -17,9 +17,17 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 try:
-    from scripts.ux_evidence import load_evidence_manifest, new_analysis_run_id, update_latest
+    from scripts.ux_evidence import (
+        atomic_write_json, load_evidence_manifest, new_analysis_run_id,
+        resolve_case_dir, sha256_file, tree_digest, update_latest,
+        validate_case_integrity, validate_schema,
+    )
 except ModuleNotFoundError:
-    from ux_evidence import load_evidence_manifest, new_analysis_run_id, update_latest
+    from ux_evidence import (
+        atomic_write_json, load_evidence_manifest, new_analysis_run_id,
+        resolve_case_dir, sha256_file, tree_digest, update_latest,
+        validate_case_integrity, validate_schema,
+    )
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8317/v1"
@@ -29,20 +37,8 @@ FULL_CONDITION = "full"
 TRACE_ONLY_CONDITION = "trace-only"
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def tree_digest(root: Path) -> str:
-    digest = hashlib.sha256()
-    for file in sorted(path for path in root.rglob("*") if path.is_file()):
-        digest.update(file.relative_to(root).as_posix().encode())
-        digest.update(file.read_bytes())
-    return digest.hexdigest()
+class InputBudgetExceeded(ValueError):
+    pass
 
 
 def ensure_loopback(base_url: str) -> None:
@@ -62,12 +58,13 @@ def input_files(case_dir: Path, case: dict, condition: str) -> tuple[list[Path],
         json_files = [case_dir / manifest["case"]["path"], case_dir / manifest["trace"]["path"]]
         image_files: list[Path] = []
     else:
-        json_files = [
+        # Method 3 receives every canonical JSON evidence file, plus the
+        # compact analysis case and detached evidence catalog.
+        json_files = list(dict.fromkeys([
             case_dir / manifest["case"]["path"],
             case_dir / case.get("evidence_manifest", "evidence-manifest.json"),
-            case_dir / manifest["trace"]["path"],
-            *[case_dir / item["metadata"]["path"] for item in manifest["snapshots"]],
-        ]
+            *sorted((case_dir / "evidence").rglob("*.json")),
+        ]))
         image_files = [case_dir / item["image"]["path"] for item in manifest["snapshots"]]
     missing = [path for path in [*json_files, *image_files] if not path.is_file()]
     if missing:
@@ -126,10 +123,11 @@ def build_content(case_dir: Path, case: dict, condition: str) -> tuple[list[dict
 def response_payload(
     case_dir: Path, case: dict, model: str, reasoning_effort: str,
     condition: str = FULL_CONDITION,
+    max_input_bytes: int | None = None,
 ) -> tuple[dict, list[dict]]:
     content, manifest = build_content(case_dir, case, condition)
     schema = json.loads((case_dir / case["output_schema"]).read_text(encoding="utf-8"))
-    return {
+    payload = {
         "model": model,
         "reasoning": {"effort": reasoning_effort},
         "input": [{"role": "user", "content": content}],
@@ -138,7 +136,15 @@ def response_payload(
         }},
         "max_output_tokens": 8000,
         "store": False,
-    }, manifest
+        "tools": [],
+    }
+    encoded_bytes = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    if max_input_bytes is not None and encoded_bytes > max_input_bytes:
+        raise InputBudgetExceeded(
+            f"Canonical Method 3 input is ineligible: encoded request "
+            f"{encoded_bytes} bytes exceeds budget {max_input_bytes}"
+        )
+    return payload, manifest
 
 
 def output_text(response: dict) -> str:
@@ -156,6 +162,8 @@ def output_text(response: dict) -> str:
 def validate_findings(
     case_dir: Path, case: dict, findings: dict, allow_snapshot_citations: bool = True
 ) -> None:
+    schema = json.loads((case_dir / case["output_schema"]).read_text(encoding="utf-8"))
+    validate_schema(findings, schema)
     if findings.get("schema_version") != 2 or findings.get("attempt_id") != case.get("attempt_id"):
         raise ValueError("Output schema_version/attempt_id does not match case.json")
     trace = json.loads((case_dir / case["evidence"]["trace"]).read_text(encoding="utf-8"))
@@ -184,6 +192,8 @@ def main() -> int:
             "trace-only sends analysis-case.json and trace.json only"
         ),
     )
+    parser.add_argument("--experiment-id")
+    parser.add_argument("--repetition", type=int, default=1)
     parser.add_argument("--base-url", default=os.getenv("UI_RATER_PROXY_BASE_URL", DEFAULT_BASE_URL))
     parser.add_argument("--api-key-file", default=".local-tools/cliproxyapi/api-key")
     parser.add_argument("--model", default=os.getenv("UI_RATER_DIRECT_MODEL", DEFAULT_MODEL))
@@ -192,16 +202,16 @@ def main() -> int:
         default=os.getenv("UI_RATER_DIRECT_REASONING_EFFORT", DEFAULT_REASONING_EFFORT),
     )
     parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument(
+        "--max-input-bytes", type=int,
+        default=int(os.getenv("UI_RATER_DIRECT_MAX_INPUT_BYTES", str(100 * 1024 * 1024))),
+        help="fail as ineligible before the API call when the complete canonical input exceeds this budget",
+    )
     args = parser.parse_args()
     ensure_loopback(args.base_url)
-    case_dir = Path(args.case).resolve()
+    case_dir = resolve_case_dir(Path(args.case))
     case = json.loads((case_dir / "case.json").read_text(encoding="utf-8"))
-    key = Path(args.api_key_file).resolve().read_text(encoding="utf-8").strip()
-    if not key:
-        raise ValueError("CLIProxyAPI key file is empty")
-    payload, manifest = response_payload(
-        case_dir, case, args.model, args.reasoning_effort, args.condition
-    )
+    integrity = validate_case_integrity(case_dir, case)
     output_name = "direct-one-shot" if args.condition == FULL_CONDITION else "direct-trace-only"
     analysis_run_id = new_analysis_run_id()
     output_dir = case_dir / "output" / "runs" / analysis_run_id / output_name
@@ -210,10 +220,37 @@ def main() -> int:
     response_file = output_dir / "response.json"
     metadata_file = output_dir / "run-metadata.json"
     manifest_file = output_dir / "input-manifest.json"
+    prompt_file = output_dir / "prompt.txt"
     # Never let a failed rerun look successful because an earlier result remains.
     for stale_file in (findings_file, response_file):
         stale_file.unlink(missing_ok=True)
-    manifest_file.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    prompt_file.write_text(direct_prompt(args.condition), encoding="utf-8")
+    try:
+        payload, manifest = response_payload(
+            case_dir, case, args.model, args.reasoning_effort, args.condition,
+            max_input_bytes=args.max_input_bytes,
+        )
+    except InputBudgetExceeded as budget_error:
+        metadata = {
+            "schema_version": 2, "harness": "direct-responses-one-shot",
+            "analysis_run_id": analysis_run_id, "condition": args.condition,
+            "experiment_id": args.experiment_id, "repetition": args.repetition,
+            "status": "ineligible", "error": str(budget_error),
+            "case_revision_id": case.get("case_revision_id"),
+            "max_input_bytes": args.max_input_bytes,
+        }
+        atomic_write_json(metadata_file, metadata)
+        print(json.dumps({
+            "ok": False, "ineligible": True, "attempt_id": case.get("attempt_id"),
+            "condition": args.condition, "analysis_run_id": analysis_run_id,
+            "output": str(findings_file), "error": str(budget_error),
+        }))
+        return 2
+    key = Path(args.api_key_file).resolve().read_text(encoding="utf-8").strip()
+    if not key:
+        raise ValueError("CLIProxyAPI key file is empty")
+    atomic_write_json(manifest_file, manifest)
+    encoded_request_bytes = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     before = {name: tree_digest(case_dir / name) for name in ("evidence", "website")}
     started = datetime.now(timezone.utc)
     started_clock = time.monotonic()
@@ -244,15 +281,26 @@ def main() -> int:
     if before != after:
         error = "Direct analysis modified immutable evidence or website source"
     metadata = {
-        "schema_version": 1, "harness": "direct-responses-one-shot",
+        "schema_version": 2, "harness": "direct-responses-one-shot",
         "analysis_run_id": analysis_run_id,
+        "experiment_id": args.experiment_id,
+        "repetition": args.repetition,
         "condition": args.condition,
         "transport": "CLIProxyAPI", "base_url": args.base_url,
         "model": args.model, "reasoning_effort": args.reasoning_effort,
+        "case_revision_id": case.get("case_revision_id"),
+        "comparison_eligible": (
+            args.condition == FULL_CONDITION
+            and integrity.get("verified") is True
+            and case.get("artifact_verification", {}).get("verified") is True
+            and error is None
+            and response.get("model") == args.model
+        ),
         "attempt_id": case.get("attempt_id"), "dataset": case.get("dataset"),
         "json_file_count": sum(item["kind"] == "json" for item in manifest),
         "image_count": sum(item["kind"] == "image" for item in manifest),
         "input_bytes": sum(item["bytes"] for item in manifest),
+        "encoded_request_bytes": encoded_request_bytes,
         "started_at": started.isoformat(),
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "duration_seconds": round(time.monotonic() - started_clock, 3),
@@ -265,8 +313,9 @@ def main() -> int:
         "schema_sha256": sha256_file(case_dir / case["output_schema"]),
         "prompt_sha256": hashlib.sha256(direct_prompt(args.condition).encode("utf-8")).hexdigest(),
     }
-    metadata_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    update_latest(case_dir / "output", output_name, analysis_run_id)
+    atomic_write_json(metadata_file, metadata)
+    if error is None:
+        update_latest(case_dir / "output", output_name, analysis_run_id)
     print(json.dumps({
         "ok": error is None, "attempt_id": case.get("attempt_id"), "condition": args.condition,
         "analysis_run_id": analysis_run_id,

@@ -2,19 +2,53 @@ import { NextRequest, NextResponse } from 'next/server';
 import { withResultsLock } from '@/lib/results';
 import { InteractionEvent } from '@/types';
 import { getParticipantTrials } from '@/lib/results';
-import { saveSessionTrace } from '@/lib/sessions';
+import { loadSession, saveSessionTrace } from '@/lib/sessions';
 import { getTrialConfigs } from '@/lib/manifest';
-import { getActiveWebsiteMetadata } from '@/lib/website-metadata';
 import { completeAttemptEvidence, getAttempt, getRun } from '@/lib/participant-store';
 import { generateTrials } from '@/lib/trials';
+import { requireCapability } from '@/lib/capabilities';
+
+async function completeLegacyTask(body: Record<string, unknown>) {
+  const { participantId, trialIndex, view_start, duration_ms, interactions } = body;
+  if (typeof participantId !== 'string' || typeof trialIndex !== 'number') {
+    return NextResponse.json({ error: 'Missing legacy task IDs' }, { status: 400 });
+  }
+  if (interactions !== undefined && !Array.isArray(interactions)) {
+    return NextResponse.json({ error: 'Legacy interactions must be an array' }, { status: 400 });
+  }
+  await withResultsLock(async (data) => {
+    const trial = data[participantId]?.trials.find((candidate) => candidate.index === trialIndex);
+    if (!trial) throw new Error('Legacy trial not found');
+    if (typeof view_start === 'string' && !trial.view_start) trial.view_start = view_start;
+    if (typeof duration_ms === 'number' && duration_ms >= 0) trial.duration_ms = duration_ms;
+    if (Array.isArray(interactions) && !trial.completed) {
+      trial.interactions = interactions.slice(0, 100_000) as InteractionEvent[];
+    }
+    trial.completed = true;
+    trial.timestamp ||= new Date().toISOString();
+  });
+  return NextResponse.json({ success: true, mode: 'legacy-web' });
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const {
-    sessionId, participantId, trialIndex, view_start, duration_ms, interactions,
+    sessionId, participantId, trialIndex, view_start, duration_ms,
     runId, assignmentId, attemptId, attemptNumber,
     recording_status, recording_error, final_flush_status, final_flush_error,
+    finalization_report, intended_outcome,
   } = body;
+
+  const hasManagedId = [sessionId, runId, assignmentId, attemptId]
+    .some((value) => value !== undefined && value !== null);
+  if (!hasManagedId) {
+    try { return await completeLegacyTask(body); }
+    catch (error: unknown) {
+      return NextResponse.json({
+        error: error instanceof Error ? error.message : 'Legacy completion failed',
+      }, { status: 404 });
+    }
+  }
 
   if (!participantId || typeof participantId !== 'string') {
     return NextResponse.json({ error: 'Missing participantId' }, { status: 400 });
@@ -30,6 +64,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    await requireCapability(req, 'attempt', attemptId);
     const managedRun = await getRun(participantId, runId);
     const managedTask = managedRun?.tasks.find((candidate) => candidate.assignment_id === assignmentId);
     if (!managedTask) throw new Error(`Assignment ${assignmentId} not found`);
@@ -37,28 +72,25 @@ export async function POST(req: NextRequest) {
     if (managedTask.position !== trialIndex) throw new Error('trialIndex does not match assignment');
     if (canonical.attempt.session_id !== sessionId) throw new Error('Attempt/session mismatch');
     if (canonical.attempt.attempt_number !== attemptNumber) throw new Error('attemptNumber does not match attempt');
-    if (canonical.attempt.status !== 'recording') {
-      // A duplicate completion must repair participant-v2 projections only. Rewriting
-      // session/results evidence here could downgrade an already decided attempt.
-      const managed = await completeAttemptEvidence({
-        participantId, runId, assignmentId, attemptId, sessionId,
-      });
-      return NextResponse.json({
-        success: true,
-        sessionId,
-        analyzeUrl: `/api/sessions/${sessionId}/analyze`,
-        attemptStatus: managed.attempt.status,
-        pendingOutcome: managed.attempt.status === 'completed_pending_outcome',
-        outcome: managed.attempt.outcome,
-      });
+    const session = await loadSession(sessionId);
+    const isRecordingProblem = intended_outcome === 'recording_problem';
+    if (!isRecordingProblem) {
+      if (final_flush_status !== 'complete'
+        || finalization_report?.interaction_flush !== 'acknowledged'
+        || finalization_report?.task_end_snapshot !== 'acknowledged') {
+        throw new Error('Evidence finalization was not fully acknowledged');
+      }
+      if (!session.snapshots.some((snapshot) => snapshot.reason === 'task-end')) {
+        throw new Error('The required task-end screenshot is absent');
+      }
     }
     const trials = await getParticipantTrials(participantId);
     const task = trials?.find((trial) => trial.index === trialIndex);
     const configs = await getTrialConfigs();
     const taskConfig = configs.find((config) => config.slug === managedTask.slug);
-    const website = await getActiveWebsiteMetadata();
+    const website = managedRun?.run.website;
 
-    await saveSessionTrace(sessionId, Array.isArray(interactions) ? interactions : [], {
+    await saveSessionTrace(sessionId, session.interactions, {
       status: 'complete',
       participant_id: participantId,
       trial_index: trialIndex,
@@ -78,6 +110,8 @@ export async function POST(req: NextRequest) {
       recording_error: typeof recording_error === 'string' ? recording_error.slice(0, 500) : undefined,
       final_flush_status: final_flush_status === 'unavailable' ? 'unavailable' : 'complete',
       final_flush_error: typeof final_flush_error === 'string' ? final_flush_error.slice(0, 500) : undefined,
+      finalization_report: finalization_report && typeof finalization_report === 'object'
+        ? finalization_report : undefined,
       website,
     });
 
@@ -101,16 +135,13 @@ export async function POST(req: NextRequest) {
       if (typeof duration_ms === 'number' && duration_ms >= 0) {
         trial.duration_ms = duration_ms;
       }
-      if (Array.isArray(interactions)) {
-        trial.interactions = interactions as InteractionEvent[];
-      }
+      trial.interactions = session.interactions as InteractionEvent[];
       trial.session_id = sessionId;
     });
 
     return NextResponse.json({
       success: true,
       sessionId,
-      analyzeUrl: `/api/sessions/${sessionId}/analyze`,
       attemptStatus: managed.attempt.status,
       pendingOutcome: managed.attempt.status === 'completed_pending_outcome',
       outcome: managed.attempt.outcome,

@@ -6,22 +6,45 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import shutil
 from datetime import datetime, timezone
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+try:
+    from scripts.ux_evidence import atomic_write_json
+except ModuleNotFoundError:
+    from ux_evidence import atomic_write_json
+
+
+def require_safe_id(value: object, label: str) -> str:
+    candidate = str(value or "")
+    if not SAFE_ID.fullmatch(candidate):
+        raise ValueError(f"Invalid {label}")
+    return candidate
+
+
+def reject_symlinks(root: Path, label: str) -> None:
+    if root.is_symlink():
+        raise ValueError(f"{label} may not be a symlink")
+    for item in root.rglob("*"):
+        if item.is_symlink():
+            raise ValueError(f"{label} contains a symlink: {item.relative_to(root)}")
 
 
 def write_json(path: Path, value: dict, apply: bool):
     if apply:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
+        atomic_write_json(path, value)
 
 
 def resolve_trial_state(data_dir: Path, participant_id: str, position: int, trial: dict) -> dict:
     session_id = trial.get("session_id")
-    source_session = data_dir / "sessions" / str(session_id)
+    source_session = data_dir / "sessions" / (
+        require_safe_id(session_id, "legacy session_id") if session_id else "missing-session"
+    )
     has_outcome_fields = any(trial.get(key) for key in (
         "outcome", "attempt_status", "task_status"
     ))
@@ -37,6 +60,8 @@ def resolve_trial_state(data_dir: Path, participant_id: str, position: int, tria
         attempt_status = "accepted" if trial.get("completed") else None
         task_status = "completed" if trial.get("completed") else "pending"
     has_session = bool(session_id and source_session.is_dir())
+    if has_session:
+        reject_symlinks(source_session, f"legacy session {session_id}")
     if task_status == "completed":
         if attempt_status != "accepted" or not has_session:
             raise ValueError(
@@ -70,6 +95,7 @@ def migrate(data_dir: Path, apply: bool = False) -> dict:
     summary = {"participants": 0, "runs": 0, "attempts": 0, "skipped": 0, "apply": apply}
     now = datetime.now(timezone.utc).isoformat()
     for participant_id, participant_data in sorted(results.items()):
+        participant_id = require_safe_id(participant_id, "legacy participant_id")
         trials = participant_data.get("trials") or []
         if not trials:
             continue
@@ -131,6 +157,8 @@ def migrate(data_dir: Path, apply: bool = False) -> dict:
                 ]
                 recording = next((path for path in recording_candidates if path.exists()), None)
                 if recording:
+                    if recording.is_symlink() or not recording.is_file():
+                        raise ValueError(f"Legacy recording is unsafe: {recording}")
                     shutil.copy2(recording, attempt_root / "recording.webm")
             write_json(attempt_root / "attempt.json", {
                 "schema_version": 2, "attempt_id": attempt_id, "assignment_id": assignment_id,

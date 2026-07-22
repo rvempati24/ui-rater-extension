@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { recordAttemptOutcome } from '@/lib/attempt-outcomes';
+import { requireLocalAdmin } from '@/lib/admin-auth';
 
 export async function POST(
   req: NextRequest,
   context: { params: Promise<{ attemptId: string }> }
 ) {
+  const denied = requireLocalAdmin(req);
+  if (denied) return denied;
   const { attemptId } = await context.params;
   const body = await req.json();
   if (!body.participantId || !body.runId || !body.assignmentId) {

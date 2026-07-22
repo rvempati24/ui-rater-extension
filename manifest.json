@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "UI Rater - Task Tracker",
   "version": "1.1.0",
-  "description": "Tracks user interactions and records video on real websites for the UI task completion study",
+  "description": "Tracks user interactions and records video on mocked websites for the UI task completion study",
   "permissions": ["storage", "activeTab", "scripting", "tabs", "tabCapture", "offscreen"],
   "host_permissions": ["<all_urls>"],
   "action": {
@@ -20,7 +20,7 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ],
   "icons": {

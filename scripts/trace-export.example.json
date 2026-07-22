@@ -1,6 +1,6 @@
 {
-  "schema_version": "2.0",
-  "layout": "participant-v2",
+  "schema_version": "3.0",
+  "layout": "participant-v3-integrity",
   "export_mode": "accepted",
   "participants_dir": "data/participants",
   "sync_state_dir": "data/sync-state",
@@ -8,5 +8,5 @@
   "local_export_dir": "exports/ux-task-trace",
   "upload_hf": false,
   "hf_repo_id": "uxBench/ux-task-trace",
-  "hf_revision": "participant-v2"
+  "hf_revision": "participant-v3-integrity"
 }

@@ -1,5 +1,6 @@
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
 
 
@@ -38,6 +39,20 @@ class ResolveWebsiteTests(unittest.TestCase):
         self.assertEqual(
             resolver.choose_run(runs, "pilot"), resolver.choose_run(runs, "pilot")
         )
+
+    def test_atomic_deployment_removes_stale_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            target = root / "deploy" / "run"
+            source.mkdir()
+            target.mkdir(parents=True)
+            (source / "index.html").write_text("new", encoding="utf-8")
+            (target / "index.html").write_text("old", encoding="utf-8")
+            (target / "stale.js").write_text("stale", encoding="utf-8")
+            resolver.replace_tree(source, target)
+            self.assertEqual((target / "index.html").read_text(), "new")
+            self.assertFalse((target / "stale.js").exists())
 
 
 if __name__ == "__main__":

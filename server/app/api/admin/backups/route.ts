@@ -1,9 +1,12 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs/promises';
 import path from 'path';
 import { BACKUPS_DIR } from '@/lib/paths';
+import { requireLocalAdmin } from '@/lib/admin-auth';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const denied = requireLocalAdmin(req);
+  if (denied) return denied;
   try {
     const files = await fs.readdir(BACKUPS_DIR);
     const details = await Promise.all(
