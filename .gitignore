@@ -85,6 +85,8 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
+!tests/fixtures/website-artifact/dist/
+!tests/fixtures/website-artifact/dist/**
 .output
 
 # Gatsby files

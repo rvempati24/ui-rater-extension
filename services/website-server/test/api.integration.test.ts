@@ -9,14 +9,29 @@ import { createWebsiteServer } from '../src/server.ts';
 import type { WebsiteConfig } from '../src/config.ts';
 import { OperationStore } from '../src/storage/operation-store.ts';
 
-async function waitFor<T>(read: () => Promise<T | undefined>, predicate: (value: T) => boolean, timeout = 5_000): Promise<T> {
+interface ArtifactOperationEnvelope {
+  operation: {
+    status: string;
+    result?: { websiteArtifactId: string; websiteAcquisitionId?: string };
+    error?: { code?: string; message?: string } | null;
+  };
+}
+
+async function waitForOperation(api: string, operationId: string, timeout = 5_000): Promise<ArtifactOperationEnvelope> {
   const started = Date.now();
   while (Date.now() - started < timeout) {
-    const value = await read();
-    if (value !== undefined && predicate(value)) return value;
+    const response = await fetch(`${api}/api/v1/artifact-jobs/${operationId}`);
+    const value = await response.json() as ArtifactOperationEnvelope;
+    if (value.operation.status === 'succeeded') return value;
+    if (value.operation.status === 'failed_retryable' || value.operation.status === 'failed_terminal') {
+      throw new Error(
+        `Website Service operation ${value.operation.status}: `
+        + `${value.operation.error?.code || 'unknown_error'}: ${value.operation.error?.message || 'no error message'}`,
+      );
+    }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  throw new Error('Timed out waiting for Website Service operation');
+  throw new Error(`Timed out waiting for Website Service operation ${operationId}`);
 }
 
 async function requestWithHost(port: number, pathname: string, host: string): Promise<{ status: number; text: string }> {
@@ -56,12 +71,9 @@ test('Website Service resolves, deploys, serves root-relative SPA, and releases'
   });
   assert.equal(jobResponse.status, 202);
   const job = await jobResponse.json() as { operation: { operationId: string } };
-  const operation = await waitFor(async () => {
-    const response = await fetch(`${api}/api/v1/artifact-jobs/${job.operation.operationId}`);
-    return await response.json() as { operation: { status: string; result?: { websiteArtifactId: string; websiteAcquisitionId: string } } };
-  }, (value) => value.operation.status === 'succeeded');
+  const operation = await waitForOperation(api, job.operation.operationId);
   const artifactId = operation.operation.result!.websiteArtifactId;
-  const acquisitionId = operation.operation.result!.websiteAcquisitionId;
+  const acquisitionId = operation.operation.result!.websiteAcquisitionId!;
   const replayJob = await fetch(`${api}/api/v1/artifact-jobs`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'fixture-job-1' },
     body: JSON.stringify({ kind: 'local', path: fixture }),
@@ -115,10 +127,7 @@ test('Website Service resumes a job that was durably queued before restart', asy
     const address = started.server.address();
     assert.ok(address && typeof address !== 'string');
     const api = `http://127.0.0.1:${address.port}`;
-    const result = await waitFor(async () => {
-      const response = await fetch(`${api}/api/v1/artifact-jobs/${queued.record.operationId}`);
-      return await response.json() as { operation: { status: string; result?: { websiteArtifactId: string } } };
-    }, (value) => value.operation.status === 'succeeded');
+    const result = await waitForOperation(api, queued.record.operationId);
     assert.match(result.operation.result!.websiteArtifactId, /^wsa_/);
   } finally {
     if (started) {
