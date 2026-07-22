@@ -98,6 +98,9 @@ export interface SessionManifest {
   final_flush_status?: 'complete' | 'unavailable';
   final_flush_error?: string;
   website?: WebsiteMetadata;
+  study_revision_id?: string;
+  study_revision_digest?: string;
+  website_snapshot?: StudyRevisionDescriptor['website'];
   finalization_report?: Record<string, unknown>;
 }
 
@@ -140,16 +143,6 @@ export interface SnapshotMetadata {
   image_file: string;
 }
 
-export interface AppEntry {
-  name: string;
-  group: string;
-  staticPath: string;
-  indexPath: string;
-  screenshotPath: string | null;
-  isDefect?: boolean;
-  defectPrinciple?: string;
-}
-
 export interface TrialConfigEntry {
   slug: string;
   group: string;
@@ -167,3 +160,4 @@ export interface ParticipantData {
 }
 
 export type ResultsStore = Record<string, ParticipantData>;
+import type { StudyRevisionDescriptor } from '@ui-rater/contracts';

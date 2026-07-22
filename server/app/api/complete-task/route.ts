@@ -3,10 +3,9 @@ import { withResultsLock } from '@/lib/results';
 import { InteractionEvent } from '@/types';
 import { getParticipantTrials } from '@/lib/results';
 import { loadSession, saveSessionTrace } from '@/lib/sessions';
-import { getTrialConfigs } from '@/lib/manifest';
 import { completeAttemptEvidence, getAttempt, getRun } from '@/lib/participant-store';
-import { generateTrials } from '@/lib/trials';
 import { requireCapability } from '@/lib/capabilities';
+import { projectRunTrials } from '@/lib/run-projections';
 
 async function completeLegacyTask(body: Record<string, unknown>) {
   const { participantId, trialIndex, view_start, duration_ms, interactions } = body;
@@ -86,8 +85,6 @@ export async function POST(req: NextRequest) {
     }
     const trials = await getParticipantTrials(participantId);
     const task = trials?.find((trial) => trial.index === trialIndex);
-    const configs = await getTrialConfigs();
-    const taskConfig = configs.find((config) => config.slug === managedTask.slug);
     const website = managedRun?.run.website;
 
     await saveSessionTrace(sessionId, session.interactions, {
@@ -96,7 +93,7 @@ export async function POST(req: NextRequest) {
       trial_index: trialIndex,
       app_id: managedTask.app_id || task?.task_app,
       task_prompt: managedTask.task_prompt,
-      site_url: managedTask.site_url || task?.site_url || taskConfig?.site_url,
+      site_url: managedTask.target_url || managedTask.site_url || task?.site_url,
       view_start,
       duration_ms,
       completed_at: new Date().toISOString(),
@@ -113,6 +110,9 @@ export async function POST(req: NextRequest) {
       finalization_report: finalization_report && typeof finalization_report === 'object'
         ? finalization_report : undefined,
       website,
+      study_revision_id: managedRun?.run.study_revision_id,
+      study_revision_digest: managedRun?.run.study_revision_digest,
+      website_snapshot: managedRun?.run.website_snapshot,
     });
 
     const managed = await completeAttemptEvidence({
@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
 
     await withResultsLock(async (data) => {
       if (!data[participantId]) {
-        data[participantId] = { run_id: runId, trials: generateTrials(configs) };
+        data[participantId] = { run_id: runId, trials: projectRunTrials(managedRun!.run, managedRun!.tasks) };
       }
       const participant = data[participantId];
       if (participant.run_id && participant.run_id !== runId) return;

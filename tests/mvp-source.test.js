@@ -40,9 +40,13 @@ test('server protects completed sessions from delayed partial saves', () => {
   assert.match(sessions, /new Set\(current\.interactions\.map\(\(event\) => event\.event_id\)/);
 });
 
-test('new trials retain the configured site URL for analysis context', () => {
-  const trials = fs.readFileSync(path.join(root, 'server', 'lib', 'trials.ts'), 'utf8');
-  assert.match(trials, /site_url:\s*config\.site_url/);
+test('managed v1 runs retain the revision website URL for participant context', () => {
+  const runRoute = fs.readFileSync(path.join(
+    root, 'server', 'app', 'api', 'v1', 'participants', '[participantId]', 'runs', 'route.ts'
+  ), 'utf8');
+  const store = fs.readFileSync(path.join(root, 'server', 'lib', 'participant-store.ts'), 'utf8');
+  assert.match(runRoute, /target_url: task\.target_url \|\| task\.site_url/);
+  assert.match(store, /website_snapshot: revision\.website/);
 });
 
 test('important actions receive paired snapshots with a high safety guard', () => {
@@ -111,14 +115,11 @@ test('completed sessions retain website provenance and attempt metadata', () => 
   const launcher = fs.readFileSync(path.join(
     root, 'server', 'scripts', 'start-with-tasks.mjs'
   ), 'utf8');
-  const metadata = fs.readFileSync(path.join(
-    root, 'server', 'lib', 'website-metadata.ts'
-  ), 'utf8');
   assert.match(completeRoute, /const website = managedRun\?\.run\.website/);
   assert.match(completeRoute, /attempt_id:/);
-  assert.match(launcher, /UI_RATER_WEBSITE_METADATA_FILE/);
-  assert.match(launcher, /UI_RATER_WEBSITE_RUN_ID/);
-  assert.match(metadata, /delete portable\.source_dir/);
+  assert.match(launcher, /api\/v1\/artifact-jobs/);
+  assert.match(launcher, /MANAGER_SERVICE_URL/);
+  assert.equal(fs.existsSync(path.join(root, 'server', 'lib', 'website-metadata.ts')), false);
 });
 
 test('evidence completion and outcome submission are separate APIs', () => {
@@ -179,36 +180,33 @@ test('duplicate complete and delayed partial requests cannot rewrite finalized p
   assert.match(partialRoute, /ignored: 'attempt_finalized'/);
 });
 
-test('task loading repairs a legacy results projection left on another run', () => {
+test('the legacy task bootstrap route is an explicit migration sentinel', () => {
   const tasksRoute = fs.readFileSync(path.join(
     root, 'server', 'app', 'api', 'tasks', 'route.ts'
   ), 'utf8');
-  assert.match(tasksRoute, /existingResults\?\.run_id !== managed\.run\.run_id/);
-  assert.match(tasksRoute, /current\?\.run_id === managed\.run\.run_id/);
-  assert.match(tasksRoute, /run_id: managed\.run\.run_id/);
+  assert.match(tasksRoute, /legacy_tasks_route_removed/);
+  assert.match(tasksRoute, /status: 410/);
+  assert.doesNotMatch(tasksRoute, /getTrialConfigs|generateTrials|getActiveWebsiteMetadata/);
 });
 
-test('idempotent run creation preserves an existing compatibility projection', () => {
+test('the legacy participant run route is an explicit migration sentinel', () => {
   const route = fs.readFileSync(path.join(
     root, 'server', 'app', 'api', 'participants', '[participantId]', 'runs', 'route.ts'
   ), 'utf8');
-  assert.match(route, /data\[participantId\]\?\.run_id === created\.run\.run_id/);
-  assert.match(route, /data\[participantId\]\.trials\?\.length/);
+  assert.match(route, /legacy_participant_runs_route_removed/);
+  assert.match(route, /status: 410/);
+  assert.doesNotMatch(route, /getTrialConfigs|generateTrials|getActiveWebsiteMetadata/);
 });
 
-test('task launcher auto-closes only after the run-completion marker is written', () => {
+test('task completion has no launcher or service lifecycle side effect', () => {
   const launcher = fs.readFileSync(path.join(
     root, 'server', 'scripts', 'start-with-tasks.mjs'
   ), 'utf8');
   const outcomeService = fs.readFileSync(path.join(
     root, 'server', 'lib', 'attempt-outcomes.ts'
   ), 'utf8');
-  assert.match(launcher, /--keep-open/);
-  assert.match(launcher, /UI_RATER_SHUTDOWN_FILE/);
-  assert.match(launcher, /child\.kill\('SIGINT'\)/);
-  assert.match(launcher, /spawnSync\('taskkill', \['\/PID'.*'\/T', '\/F'\]/);
-  assert.match(outcomeService, /UI_RATER_DEFER_SHUTDOWN_FOR_COMPLETION_CHOICE/);
-  assert.match(launcher, /UI_RATER_DEFER_SHUTDOWN_FOR_COMPLETION_CHOICE/);
+  assert.doesNotMatch(launcher, /UI_RATER_SHUTDOWN_FILE|UI_RATER_DEFER_SHUTDOWN/);
+  assert.doesNotMatch(outcomeService, /requestLauncherShutdown|UI_RATER_SHUTDOWN/);
 });
 
 test('completed run offers an explicit server-side Hugging Face upload choice', () => {
@@ -224,21 +222,19 @@ test('completed run offers an explicit server-side Hugging Face upload choice', 
   assert.match(html, /id="uploadHfBtn"/);
   assert.match(html, /id="keepLocalBtn"/);
   assert.match(popup, /\/api\/runs\/\$\{encodeURIComponent\(state\.runId\)\}\/hf-upload/);
-  assert.match(popup, /\/api\/runs\/\$\{encodeURIComponent\(state\.runId\)\}\/finish/);
+  assert.doesNotMatch(popup, /\/api\/runs\/\$\{encodeURIComponent\(state\.runId\)\}\/finish/);
   assert.match(service, /process\.env\.HF_TOKEN/);
   assert.doesNotMatch(popup, /HF_TOKEN/);
   assert.match(service, /found\.run\.status|statusBeforeUpload\.run_status/);
   assert.match(uploadRoute, /SAFE_ID/);
-  assert.match(finishRoute, /found\.run\.status !== 'completed'/);
+  assert.match(finishRoute, /launcher_lifecycle_removed/);
 });
 
-test('task launcher serves the synthetic SPA on a separate origin', () => {
+test('compatibility launcher delegates website serving to Website Service', () => {
   const launcher = fs.readFileSync(path.join(
     root, 'server', 'scripts', 'start-with-tasks.mjs'
   ), 'utf8');
-  assert.match(launcher, /--website-port/);
-  assert.match(launcher, /startWebsiteServer/);
-  assert.match(launcher, /const websiteUrl = `http:\/\/localhost:\$\{websitePort\}\//);
-  assert.match(launcher, /site_url: websiteUrl/);
-  assert.match(launcher, /websiteServer\.close\(\)/);
+  assert.doesNotMatch(launcher, /startWebsiteServer|createServer/);
+  assert.match(launcher, /WEBSITE_SERVICE_URL/);
+  assert.match(launcher, /api\/v1\/artifact-jobs/);
 });

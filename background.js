@@ -1,6 +1,6 @@
 importScripts('task-session.js');
 
-const DEFAULT_SERVER = 'http://127.0.0.1:3000';
+const DEFAULT_COLLECTOR = 'http://127.0.0.1:3000';
 const ACTIVE_SESSION_KEY = '_activeSession';
 const WORKFLOW_KEY = '_taskWorkflow';
 // A task normally produces paired before/after images for important actions.
@@ -8,6 +8,10 @@ const WORKFLOW_KEY = '_taskWorkflow';
 const MAX_SNAPSHOTS = 120;
 const RESERVED_TASK_END_SNAPSHOTS = 1;
 const SNAPSHOT_DEBOUNCE_MS = 400;
+
+function collectorUrlFrom(data) {
+  return data.collectorUrl || data.serverUrl || DEFAULT_COLLECTOR;
+}
 
 let sessionWriteLock = Promise.resolve();
 let snapshotUploadLock = Promise.resolve();
@@ -94,10 +98,10 @@ async function startRecording(tabId) {
   });
 }
 
-async function stopRecording(serverUrl, participantId, taskIndex, managed = {}) {
-  return new Promise((resolve) => {
+async function stopRecording(collectorUrl, participantId, taskIndex, managed = {}) {
+    return new Promise((resolve) => {
     chrome.runtime.sendMessage({
-      type: 'STOP_RECORDING', serverUrl, participantId, taskIndex, ...managed,
+      type: 'STOP_RECORDING', collectorUrl, participantId, taskIndex, ...managed,
     }, (res) => {
       resolve(res || { ok: false, error: 'Recorder did not respond' });
     });
@@ -157,7 +161,7 @@ async function reusePendingTask(tabId, url) {
 
 async function createSession() {
   const data = await chrome.storage.local.get([
-    'participantId', 'serverUrl', 'runId', 'runCapability', 'tasks', 'currentTaskIndex', WORKFLOW_KEY,
+    'participantId', 'collectorUrl', 'serverUrl', 'runId', 'runCapability', 'tasks', 'currentTaskIndex', WORKFLOW_KEY,
   ]);
   const task = data.tasks?.[data.currentTaskIndex || 0];
   if (!data.participantId || !data.runId || !task?.assignment_id) {
@@ -169,7 +173,7 @@ async function createSession() {
     viewStart: new Date().toISOString(),
   };
   const response = await fetch(
-    `${data.serverUrl || DEFAULT_SERVER}/api/assignments/${encodeURIComponent(task.assignment_id)}/attempts`,
+    `${collectorUrlFrom(data)}/api/assignments/${encodeURIComponent(task.assignment_id)}/attempts`,
     {
       method: 'POST', headers: {
         'Content-Type': 'application/json',
@@ -278,10 +282,10 @@ async function startTaskFlow(msg) {
     stopTracking: (tabId) => sendTabMessage(tabId, { type: 'STOP_TRACKING' }),
     cancelRecording,
     clearSession: async (failedSession) => {
-      const data = await chrome.storage.local.get(['participantId', 'serverUrl']);
+      const data = await chrome.storage.local.get(['participantId', 'collectorUrl', 'serverUrl']);
       let invalidated = false;
       if (failedSession?.attemptId) {
-        const response = await fetch(`${data.serverUrl || DEFAULT_SERVER}/api/attempts/${encodeURIComponent(failedSession.attemptId)}/outcome`, {
+        const response = await fetch(`${collectorUrlFrom(data)}/api/attempts/${encodeURIComponent(failedSession.attemptId)}/outcome`, {
           method: 'POST', headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${failedSession.attemptCapability || ''}`,
@@ -360,7 +364,7 @@ async function activeTabId(windowId) {
 }
 
 async function uploadCapture(record) {
-  const response = await fetch(`${record.serverUrl}/api/sessions/${record.sessionId}/snapshot`, {
+  const response = await fetch(`${record.collectorUrl}/api/sessions/${record.sessionId}/snapshot`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -398,8 +402,8 @@ async function drainPendingCaptures() {
 }
 
 async function postTraceBatch(data, session, batchId, events) {
-  const serverUrl = data.serverUrl || DEFAULT_SERVER;
-  const response = await fetch(`${serverUrl}/api/partial-save`, {
+  const collectorUrl = collectorUrlFrom(data);
+  const response = await fetch(`${collectorUrl}/api/partial-save`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -437,7 +441,7 @@ async function reconcileTraceWithServer(data, session) {
 async function appendInteractions(msg, sender) {
   return withSessionWrite(async () => {
     const data = await chrome.storage.local.get([
-      ACTIVE_SESSION_KEY, 'participantId', 'serverUrl', 'currentTaskIndex', 'tasks',
+      ACTIVE_SESSION_KEY, 'participantId', 'collectorUrl', 'serverUrl', 'currentTaskIndex', 'tasks',
     ]);
     const session = data[ACTIVE_SESSION_KEY];
     if (!session || !Array.isArray(msg.interactions)) return { ok: false, error: 'No active session' };
@@ -500,7 +504,7 @@ async function captureSnapshot(msg, sender) {
   try {
     prepared = await withCaptureLock(initialSession.windowId, async () => {
       const data = await chrome.storage.local.get([
-        ACTIVE_SESSION_KEY, 'serverUrl', 'participantId',
+        ACTIVE_SESSION_KEY, 'collectorUrl', 'serverUrl', 'participantId',
       ]);
       const session = data[ACTIVE_SESSION_KEY];
       if (!session) return { response: { ok: false, error: 'No active session' } };
@@ -539,7 +543,7 @@ async function captureSnapshot(msg, sender) {
       const upload = {
         captureRequestId,
         sessionId: session.sessionId,
-        serverUrl: data.serverUrl || DEFAULT_SERVER,
+        collectorUrl: collectorUrlFrom(data),
         attemptCapability: session.attemptCapability,
         capturedTs,
         reason: msg.reason,
@@ -608,12 +612,12 @@ async function captureSnapshot(msg, sender) {
 
 async function finishAttemptEvidence(msg) {
   const data = await chrome.storage.local.get([
-    ACTIVE_SESSION_KEY, 'participantId', 'serverUrl', 'currentTaskIndex', 'tasks',
+    ACTIVE_SESSION_KEY, 'participantId', 'collectorUrl', 'serverUrl', 'currentTaskIndex', 'tasks',
   ]);
   const session = data[ACTIVE_SESSION_KEY];
   if (!data.participantId || !data.tasks || !session) throw new Error('Not configured');
 
-  const serverUrl = data.serverUrl || DEFAULT_SERVER;
+  const collectorUrl = collectorUrlFrom(data);
   const taskIndex = (data.currentTaskIndex || 0) + 1;
   const participantId = data.participantId;
   await drainPendingCaptures();
@@ -638,7 +642,7 @@ async function finishAttemptEvidence(msg) {
     runId: session.runId, assignmentId: session.assignmentId, attemptId: session.attemptId,
     attemptCapability: session.attemptCapability,
   };
-  const recordingResult = await stopRecording(serverUrl, participantId, taskIndex, managed);
+  const recordingResult = await stopRecording(collectorUrl, participantId, taskIndex, managed);
   let recordingStatus = 'saved';
   let recordingError;
   if (!recordingResult.ok) {
@@ -674,7 +678,7 @@ async function finishAttemptEvidence(msg) {
   if (finalSession.integrityStatus === 'unsupported_multi_tab' && msg.outcome !== 'recording_problem') {
     throw new Error('This attempt opened another tab and is unsupported; mark a recording problem');
   }
-  const res = await fetch(`${serverUrl}/api/complete-task`, {
+  const res = await fetch(`${collectorUrl}/api/complete-task`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -718,8 +722,8 @@ async function finishAttemptEvidence(msg) {
     let refreshed = null;
     try {
       const taskResponse = await fetch(
-        `${serverUrl}/api/tasks?participantId=${encodeURIComponent(participantId)}`
-          + `&runId=${encodeURIComponent(finalSession.runId)}`,
+        `${collectorUrl}/api/v1/participants/${encodeURIComponent(participantId)}/runs/`
+          + `${encodeURIComponent(finalSession.runId)}/tasks`,
         { headers: { 'Authorization': `Bearer ${(await chrome.storage.local.get(['runCapability'])).runCapability || ''}` } }
       );
       if (taskResponse.ok) refreshed = await taskResponse.json();
@@ -778,7 +782,7 @@ async function prepareFinalization(msg) {
 
 async function submitAttemptOutcome(outcome, reason) {
   const data = await chrome.storage.local.get([
-    'serverUrl', 'tasks', 'currentTaskIndex', WORKFLOW_KEY,
+    'collectorUrl', 'serverUrl', 'tasks', 'currentTaskIndex', WORKFLOW_KEY,
   ]);
   const pending = data[WORKFLOW_KEY];
   if (!pending?.attemptId) throw new Error('No attempt is waiting for an outcome');
@@ -790,8 +794,8 @@ async function submitAttemptOutcome(outcome, reason) {
     phase: 'submitting_outcome',
     intendedOutcome: outcome, reason, lastError: undefined,
   });
-  const serverUrl = data.serverUrl || DEFAULT_SERVER;
-  const response = await fetch(`${serverUrl}/api/attempts/${encodeURIComponent(pending.attemptId)}/outcome`, {
+  const collectorUrl = collectorUrlFrom(data);
+  const response = await fetch(`${collectorUrl}/api/attempts/${encodeURIComponent(pending.attemptId)}/outcome`, {
     method: 'POST', headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${pending.attemptCapability || ''}`,
@@ -955,8 +959,8 @@ chrome.tabs.onCreated.addListener((tab) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.get(['serverUrl'], (data) => {
-    if (!data.serverUrl) chrome.storage.local.set({ serverUrl: DEFAULT_SERVER });
+  chrome.storage.local.get(['collectorUrl', 'serverUrl'], (data) => {
+    if (!data.collectorUrl) chrome.storage.local.set({ collectorUrl: data.serverUrl || DEFAULT_COLLECTOR });
   });
   void drainPendingCaptures().catch(() => {});
 });

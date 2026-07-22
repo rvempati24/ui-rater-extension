@@ -1,10 +1,11 @@
-const DEFAULT_SERVER = 'http://127.0.0.1:3000';
+const DEFAULT_COLLECTOR = 'http://127.0.0.1:3000';
 
 const $ = (id) => document.getElementById(id);
 
 let state = {
   participantId: '',
-  serverUrl: DEFAULT_SERVER,
+  collectorUrl: DEFAULT_COLLECTOR,
+  studyRevisionId: '',
   tasks: null,
   currentTaskIndex: 0,
   runId: '',
@@ -37,36 +38,43 @@ async function runExclusive(operation) {
 
 async function init() {
   const data = await chrome.storage.local.get([
-    'participantId', 'serverUrl', 'tasks', 'currentTaskIndex', 'runId', 'runCapability',
+    'participantId', 'collectorUrl', 'serverUrl', 'studyRevisionId', 'tasks', 'currentTaskIndex', 'runId', 'runCapability',
   ]);
-  if (data.participantId && data.tasks) {
+  const collectorUrl = data.collectorUrl || data.serverUrl || DEFAULT_COLLECTOR;
+  if (data.participantId && data.tasks && data.studyRevisionId) {
     if (!data.runCapability) {
       try {
-        const serverUrl = data.serverUrl || DEFAULT_SERVER;
         const response = await fetch(
-          `${serverUrl}/api/tasks?participantId=${encodeURIComponent(data.participantId)}`
+          `${collectorUrl}/api/v1/participants/${encodeURIComponent(data.participantId)}/runs/resume`,
+          {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ studyRevisionId: data.studyRevisionId }),
+          }
         );
-        if (!response.ok) throw new Error(`Server returned ${response.status}`);
+        if (!response.ok) throw new Error(`Collection returned ${response.status}`);
         const refreshed = await response.json();
         data.tasks = refreshed.tasks;
         data.currentTaskIndex = refreshed.currentTaskIndex;
         data.runId = refreshed.runId;
         data.runCapability = refreshed.runCapability;
         await chrome.storage.local.set({
+          collectorUrl,
           tasks: data.tasks, currentTaskIndex: data.currentTaskIndex,
           runId: data.runId, runCapability: data.runCapability,
         });
       } catch {
         showSetup();
         $('participantInput').value = data.participantId;
-        $('serverInput').value = data.serverUrl || DEFAULT_SERVER;
-        showError('setupError', 'Please reload this run from the server to refresh authorization.');
+        $('serverInput').value = collectorUrl;
+        $('studyRevisionInput').value = data.studyRevisionId || '';
+        showError('setupError', 'Please resume this Study Revision from Collection to refresh authorization.');
         return;
       }
     }
     state = {
       participantId: data.participantId,
-      serverUrl: data.serverUrl || DEFAULT_SERVER,
+      collectorUrl,
+      studyRevisionId: data.studyRevisionId,
       tasks: data.tasks,
       currentTaskIndex: data.currentTaskIndex || 0,
       runId: data.runId || '',
@@ -77,7 +85,8 @@ async function init() {
     return;
   }
   showSetup();
-  if (data.serverUrl) $('serverInput').value = data.serverUrl;
+  if (collectorUrl) $('serverInput').value = collectorUrl;
+  if (data.studyRevisionId) $('studyRevisionInput').value = data.studyRevisionId;
 }
 
 function showSetup() {
@@ -137,7 +146,7 @@ async function showTask() {
   const task = state.tasks[state.currentTaskIndex];
   $('progressText').textContent = `Task ${state.currentTaskIndex + 1} of ${state.tasks.length}`;
   $('taskPrompt').textContent = task.task_prompt;
-  $('taskSite').textContent = task.site_url ? `→ ${task.site_url}` : '';
+  $('taskSite').textContent = (task.target_url || task.site_url) ? `→ ${task.target_url || task.site_url}` : '';
 
   const data = await chrome.storage.local.get([
     '_tracking', '_pendingTaskTabId', '_runTaskTabId', '_activeSession', '_taskWorkflow',
@@ -171,7 +180,7 @@ async function updateBeginTaskButton(task, pendingTaskTabId, reusableTaskTabId) 
   try {
     const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const plan = UiRaterTaskSession.planTaskStart({
-      currentTab, siteUrl: task.site_url, pendingTaskTabId, reusableTaskTabId,
+      currentTab, siteUrl: task.target_url || task.site_url, pendingTaskTabId, reusableTaskTabId,
     });
     button.textContent = plan.action === 'record'
       ? 'Start Recording'
@@ -207,7 +216,7 @@ async function showDone() {
   }
   try {
     const response = await fetch(
-      `${state.serverUrl}/api/runs/${encodeURIComponent(state.runId)}/hf-upload?participantId=${encodeURIComponent(state.participantId)}`,
+      `${state.collectorUrl}/api/runs/${encodeURIComponent(state.runId)}/hf-upload?participantId=${encodeURIComponent(state.participantId)}`,
       { headers: { 'Authorization': `Bearer ${state.runCapability}` } }
     );
     if (!response.ok) return;
@@ -215,8 +224,8 @@ async function showDone() {
     if (status.sync) {
       $('uploadHfBtn').textContent = 'Already Uploaded';
       $('uploadHfBtn').disabled = true;
-      $('keepLocalBtn').textContent = 'Finish and Close Localhost';
-      setCompletionStatus(`Uploaded to ${status.sync.repo_id}@${status.sync.revision}. Choose Keep Local Only to finish and close localhost.`);
+      $('keepLocalBtn').textContent = 'Finish Locally';
+      setCompletionStatus(`Uploaded to ${status.sync.repo_id}@${status.sync.revision}. Choose Finish Locally to retain the evidence.`);
     } else if (status.nothing_to_upload) {
       $('uploadHfBtn').textContent = 'No Accepted Attempts';
       $('uploadHfBtn').disabled = true;
@@ -313,9 +322,14 @@ async function applyOutcomeResult(result) {
 
 $('startBtn').addEventListener('click', async () => {
   const pid = $('participantInput').value.trim();
-  const server = $('serverInput').value.trim() || DEFAULT_SERVER;
+  const collectorUrl = $('serverInput').value.trim() || DEFAULT_COLLECTOR;
+  const studyRevisionId = $('studyRevisionInput').value.trim();
   if (!pid) {
     showError('setupError', 'Please enter a participant ID.');
+    return;
+  }
+  if (!studyRevisionId) {
+    showError('setupError', 'Please enter a Study Revision ID.');
     return;
   }
   $('startBtn').disabled = true;
@@ -323,8 +337,8 @@ $('startBtn').addEventListener('click', async () => {
   try {
     const startNewRun = $('newRunInput').checked;
     const endpoint = startNewRun
-      ? `${server}/api/participants/${encodeURIComponent(pid)}/runs`
-      : `${server}/api/tasks?participantId=${encodeURIComponent(pid)}`;
+      ? `${collectorUrl}/api/v1/participants/${encodeURIComponent(pid)}/runs`
+      : `${collectorUrl}/api/v1/participants/${encodeURIComponent(pid)}/runs/resume`;
     let runCreationKey = '';
     if (startNewRun) {
       const pending = await chrome.storage.local.get(['_runCreationKey']);
@@ -332,26 +346,30 @@ $('startBtn').addEventListener('click', async () => {
       await chrome.storage.local.set({ _runCreationKey: runCreationKey });
     }
     const res = await fetch(endpoint, {
-      method: startNewRun ? 'POST' : 'GET',
-      headers: startNewRun
-        ? { 'Idempotency-Key': runCreationKey }
-        : (state.runCapability ? { 'Authorization': `Bearer ${state.runCapability}` } : undefined),
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(startNewRun ? { 'Idempotency-Key': runCreationKey } : {}),
+      },
+      body: JSON.stringify({ studyRevisionId }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || `Server returned ${res.status}`);
+      throw new Error(err.error?.message || err.error || `Collection returned ${res.status}`);
     }
     const data = await res.json();
     if (!data.tasks?.length) throw new Error('No tasks found for this participant.');
     state = {
       participantId: pid,
-      serverUrl: server,
+      collectorUrl,
+      studyRevisionId,
       tasks: data.tasks,
       currentTaskIndex: data.currentTaskIndex || 0,
       runId: data.runId,
       runCapability: data.runCapability,
     };
     await chrome.storage.local.set(state);
+    await chrome.storage.local.set({ collectorUrl, studyRevisionId });
     if (startNewRun) await chrome.storage.local.remove(['_runCreationKey']);
     if (state.currentTaskIndex >= state.tasks.length) await showDone();
     else await showTask();
@@ -378,12 +396,13 @@ async function clearExtensionCache() {
   if (!window.confirm('Clear this extension cache? Saved server traces, screenshots, and videos will not be deleted.')) return;
   await chrome.storage.local.clear();
   state = {
-    participantId: '', serverUrl: DEFAULT_SERVER, tasks: null,
+    participantId: '', collectorUrl: DEFAULT_COLLECTOR, studyRevisionId: '', tasks: null,
     currentTaskIndex: 0, runId: '', runCapability: '',
   };
   showSetup();
   $('participantInput').value = '';
-  $('serverInput').value = DEFAULT_SERVER;
+  $('serverInput').value = DEFAULT_COLLECTOR;
+  $('studyRevisionInput').value = '';
   $('setupError').textContent = 'Extension cache cleared. Server recordings were not changed.';
   $('setupError').style.color = '#15803d';
   $('setupError').classList.remove('hidden');
@@ -401,11 +420,11 @@ $('beginTaskBtn').addEventListener('click', () => runExclusive(async () => {
   $('beginTaskBtn').disabled = true;
   $('beginTaskBtn').textContent = 'Starting…';
   try {
-    if (!task.site_url) throw new Error('This task does not have a website URL.');
+    if (!(task.target_url || task.site_url)) throw new Error('This assignment does not have a target URL.');
     const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const result = await sendRuntimeMessage({
       type: 'START_TASK_FLOW',
-      siteUrl: task.site_url,
+      siteUrl: task.target_url || task.site_url,
       currentTab: { id: currentTab.id, url: currentTab.url, windowId: currentTab.windowId },
     });
     if (!result?.ok) throw new Error(result?.error || 'Failed to start the task recording.');
@@ -555,21 +574,9 @@ $('markProblemBtn').addEventListener('click', () => runExclusive(async () => {
   await applyOutcomeResult(result);
 }));
 
-async function requestLauncherFinish() {
-  const response = await fetch(`${state.serverUrl}/api/runs/${encodeURIComponent(state.runId)}/finish`, {
-    method: 'POST', headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${state.runCapability}`,
-    },
-    body: JSON.stringify({ participantId: state.participantId }),
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Could not finish run: ${response.status}`);
-}
-
 $('uploadHfBtn').addEventListener('click', () => runExclusive(async () => {
   setCompletionStatus('Uploading accepted attempts…');
-  const response = await fetch(`${state.serverUrl}/api/runs/${encodeURIComponent(state.runId)}/hf-upload`, {
+  const response = await fetch(`${state.collectorUrl}/api/runs/${encodeURIComponent(state.runId)}/hf-upload`, {
     method: 'POST', headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${state.runCapability}`,
@@ -587,14 +594,12 @@ $('uploadHfBtn').addEventListener('click', () => runExclusive(async () => {
   });
   $('hfUploadChoice').classList.add('hidden');
   setCompletionStatus(message);
-  await requestLauncherFinish();
 }));
 
 $('keepLocalBtn').addEventListener('click', () => runExclusive(async () => {
   const message = $('uploadHfBtn').disabled && $('uploadHfBtn').textContent === 'Already Uploaded'
     ? 'Run finished. The Hugging Face copy and local evidence were retained.'
     : 'Kept locally without a new Hugging Face upload.';
-  await requestLauncherFinish();
   await chrome.storage.local.set({
     _completedRunDecision: { runId: state.runId, choice: 'local', message },
   });
@@ -604,13 +609,13 @@ $('keepLocalBtn').addEventListener('click', () => runExclusive(async () => {
 
 $('resetBtn').addEventListener('click', async () => {
   await chrome.storage.local.remove([
-    'participantId', 'tasks', 'currentTaskIndex', 'runId', 'runCapability', '_tracking', '_sessionId',
+    'participantId', 'studyRevisionId', 'tasks', 'currentTaskIndex', 'runId', 'runCapability', '_tracking', '_sessionId',
     '_originTime', '_viewStart', '_taskTabId', '_runTaskTabId', '_pendingTaskTabId', '_activeSession',
     '_taskWorkflow',
     '_completedRunDecision',
   ]);
   state = {
-    participantId: '', serverUrl: state.serverUrl, tasks: null,
+    participantId: '', collectorUrl: state.collectorUrl, studyRevisionId: '', tasks: null,
     currentTaskIndex: 0, runId: '', runCapability: '',
   };
   showSetup();

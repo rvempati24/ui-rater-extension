@@ -19,7 +19,9 @@ test('popup supports participant runs and explicit task outcomes', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'popup.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '..', 'popup.html'), 'utf8');
 
-  assert.match(source, /api\/participants\/.*\/runs/);
+  assert.match(source, /api\/v1\/participants\/.*\/runs/);
+  assert.match(source, /studyRevisionId/);
+  assert.match(source, /collectorUrl/);
   assert.match(source, /runId/);
   assert.match(source, /type:\s*['"]FINISH_WITH_OUTCOME['"]/);
   assert.match(source, /type:\s*['"]SUBMIT_OUTCOME['"]/);

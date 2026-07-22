@@ -1,5 +1,5 @@
 {
-  "name": "ui-rater",
+  "name": "@ui-rater/collection-server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,9 +10,10 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test ../tests/*.test.js"
+    "test": "UI_RATER_SKIP_E2E=1 node --import tsx --test ../tests/*.test.js"
   },
   "dependencies": {
+    "@ui-rater/contracts": "0.1.0",
     "googleapis": "^171.4.0",
     "html2canvas": "^1.4.1",
     "next": "16.1.6",

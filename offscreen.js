@@ -51,7 +51,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'STOP_RECORDING') {
-    stopRecording(msg.serverUrl, msg.participantId, msg.taskIndex, msg)
+    stopRecording(msg.collectorUrl || msg.serverUrl, msg.participantId, msg.taskIndex, msg)
       .then((result) => sendResponse(result))
       .catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
@@ -105,17 +105,17 @@ async function startRecording(streamId) {
   recorder.start(1000);
 }
 
-async function stopRecording(serverUrl, participantId, taskIndex, managed = {}) {
+async function stopRecording(collectorUrl, participantId, taskIndex, managed = {}) {
   if (recorder) {
     if (recorder.state !== 'inactive') recorder.stop();
     await recorderStopped;
   }
   await restorePendingBlob();
 
-  if (!serverUrl || !participantId || !taskIndex) {
+  if (!collectorUrl || !participantId || !taskIndex) {
     return { ok: false, error: 'Missing upload params', code: 'invalid_upload', retryable: false };
   }
-  const uploadKey = `${serverUrl}|${participantId}|${managed.attemptId || taskIndex}`;
+  const uploadKey = `${collectorUrl}|${participantId}|${managed.attemptId || taskIndex}`;
   if (!pendingBlob) {
     const stored = await chrome.storage.local.get(['_lastUploadedRecording']);
     lastUploadedTask = lastUploadedTask || stored._lastUploadedRecording;
@@ -125,7 +125,7 @@ async function stopRecording(serverUrl, participantId, taskIndex, managed = {}) 
 
   try {
     const res = await fetch(
-      `${serverUrl}/api/upload-recording?participantId=${encodeURIComponent(participantId)}`
+      `${collectorUrl}/api/upload-recording?participantId=${encodeURIComponent(participantId)}`
         + `&taskIndex=${encodeURIComponent(taskIndex)}`
         + (managed.runId ? `&runId=${encodeURIComponent(managed.runId)}` : '')
         + (managed.assignmentId ? `&assignmentId=${encodeURIComponent(managed.assignmentId)}` : '')

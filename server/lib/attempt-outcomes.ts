@@ -3,7 +3,6 @@ import { projectLegacyTrial } from './participant-state.ts';
 import type { AttemptOutcome } from './participant-state.ts';
 import { updateManifest } from './sessions.ts';
 import { withResultsLock } from './results.ts';
-import { requestLauncherShutdown } from './launcher-shutdown.ts';
 
 export interface RecordAttemptOutcomeInput {
   participantId: string;
@@ -51,10 +50,6 @@ export async function recordAttemptOutcome(input: RecordAttemptOutcomeInput) {
     }
     Object.assign(trial, projectLegacyTrial(trial, projectedAttempt, result.task));
   });
-
-  if (result.runCompleted && process.env.UI_RATER_DEFER_SHUTDOWN_FOR_COMPLETION_CHOICE !== '1') {
-    await requestLauncherShutdown(input.runId);
-  }
 
   return result;
 }

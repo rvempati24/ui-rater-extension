@@ -1,0 +1,5 @@
+[
+  {"slug":"one","group":"fixture","plain_app":"fixture-app","task_prompt":"Complete fixture task one","source":"mind2web","suggested_flows":["click"]},
+  {"slug":"two","group":"fixture","plain_app":"fixture-app","task_prompt":"Complete fixture task two","suggested_flows":["type"]},
+  {"slug":"three","group":"fixture","plain_app":"fixture-app","task_prompt":"Complete fixture task three","suggested_flows":["submit"]}
+]

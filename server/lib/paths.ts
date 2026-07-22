@@ -13,6 +13,7 @@ export const RESULTS_PATH = path.join(DATA_DIR, 'results.json');
 export const RECORDINGS_DIR = path.join(DATA_DIR, 'recordings');
 export const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
 export const PARTICIPANT_DATA_DIR = path.join(DATA_DIR, 'participants');
+export const STUDY_REVISIONS_DIR = path.join(DATA_DIR, 'study-revisions');
 export const SESSIONS_DIR = process.env.UI_RATER_SESSION_DIR
   ? path.resolve(process.env.UI_RATER_SESSION_DIR)
   : path.join(DATA_DIR, 'sessions');
@@ -22,7 +23,5 @@ const configCandidate = path.join(cwd, 'config');
 const configFallback = path.join(cwd, 'server', 'config');
 const CONFIG_DIR = fs.existsSync(configCandidate) ? configCandidate : configFallback;
 
-export const PARTICIPANTS_PATH = path.join(CONFIG_DIR, 'participants.json');
-export const TRIALS_CONFIG_PATH = process.env.UI_RATER_TRIALS_CONFIG
-  ? path.resolve(process.env.UI_RATER_TRIALS_CONFIG)
-  : path.join(CONFIG_DIR, 'trials-config.json');
+export const BUNDLED_PARTICIPANTS_PATH = path.join(CONFIG_DIR, 'participants.json');
+export const PARTICIPANTS_PATH = path.join(DATA_DIR, 'config', 'participants.json');

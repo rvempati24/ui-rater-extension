@@ -1,6 +1,13 @@
 import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
+import {
+  ContractError,
+  assertIdempotencyKey,
+  requestDigest,
+  validateStudyRevision,
+  type StudyRevisionDescriptor,
+} from '@ui-rater/contracts';
 import type { TrialConfigEntry, WebsiteMetadata } from '@/types';
 import { PARTICIPANT_DATA_DIR, SESSIONS_DIR } from './paths.ts';
 import { writeFileAtomic, writeJsonAtomic } from './atomic-file.ts';
@@ -10,6 +17,11 @@ import {
 } from './participant-state.ts';
 import type { AttemptOutcome, AttemptStatus, TaskStatus } from './participant-state.ts';
 import { assertSessionId, initializeSession } from './sessions.ts';
+import {
+  assertStudyAdmissionAccepting,
+  getStudyRevisionRegistration,
+  withStudyRegistrationLock,
+} from './study-revisions.ts';
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -36,6 +48,11 @@ export interface RunRecord {
   task_count: number;
   outcome_summary?: { completed: number; skipped: number; failed_no_retry: number };
   creation_key?: string;
+  creation_request_digest?: string;
+  study_revision_id?: string;
+  study_revision_digest?: string;
+  study_revision?: StudyRevisionDescriptor;
+  website_snapshot?: StudyRevisionDescriptor['website'];
 }
 
 export interface TaskRecord {
@@ -47,6 +64,12 @@ export interface TaskRecord {
   source_position: number;
   task_prompt: string;
   site_url: string;
+  target_url?: string;
+  website_task_id?: string;
+  is_mind2web?: boolean;
+  task_source?: string;
+  legacy_app_id?: string;
+  suggested_flows?: string[];
   group: string;
   slug: string;
   app_id: string;
@@ -150,7 +173,7 @@ export async function createRun(
       throw new Error(`Participant is ${existing.status}`);
     }
     if (creationKey) {
-      assertId(creationKey, 'creationKey');
+      assertIdempotencyKey(creationKey, 'creationKey');
       const prior = (await listRuns(participantId)).find((candidate) => candidate.creation_key === creationKey);
       if (prior) {
         const recovered = await getRun(participantId, prior.run_id);
@@ -226,13 +249,176 @@ export async function createRun(
   });
 }
 
+/**
+ * Canonical v1 run creation path. The Study Revision is the complete input;
+ * no process-global trials configuration or Website Service lookup is used.
+ * Lock order is always study registration -> participant -> run/session.
+ */
+export async function createRunFromStudyRevision(
+  participantId: string,
+  rawRevision: StudyRevisionDescriptor,
+  creationKey: string,
+): Promise<{
+  participant: ParticipantRecord;
+  run: RunRecord;
+  tasks: TaskWithAttemptState[];
+  created: boolean;
+}> {
+  assertId(participantId, 'participantId');
+  assertIdempotencyKey(creationKey, 'creationKey');
+  const revision = validateStudyRevision(rawRevision);
+  const revisionDigest = requestDigest(revision);
+  const creationRequestDigest = requestDigest({
+    participantId,
+    studyRevisionId: revision.studyRevisionId,
+    revisionDigest,
+  });
+  return withStudyRegistrationLock(revision.studyRevisionId, async () => {
+    const registered = await getStudyRevisionRegistration(revision.studyRevisionId);
+    if (!registered) throw new ContractError('study_revision_not_found', 'Study revision was not registered');
+    if (requestDigest(registered.revision) !== revisionDigest) {
+      throw new ContractError('study_revision_conflict', 'Study revision content does not match Collection registration');
+    }
+    return withLock(`participant:${participantId}`, async () => {
+      const now = new Date().toISOString();
+      const participantFile = path.join(participantDir(participantId), 'participant.json');
+      const existing = await readJsonMaybe<ParticipantRecord>(participantFile);
+      if (existing?.status === 'disabled' || existing?.status === 'archived') {
+        throw new ContractError('participant_unavailable', `Participant is ${existing.status}`);
+      }
+
+      const priorRuns = await listRuns(participantId);
+      const priorByKey = priorRuns.find((candidate) => candidate.creation_key === creationKey);
+      if (priorByKey) {
+        if (priorByKey.creation_request_digest && priorByKey.creation_request_digest !== creationRequestDigest) {
+          throw new ContractError('idempotency_key_reused', 'Run Idempotency-Key was reused with different content');
+        }
+        if (priorByKey.study_revision_id !== revision.studyRevisionId) {
+          throw new ContractError('idempotency_key_reused', 'Run Idempotency-Key belongs to another Study Revision');
+        }
+        const recovered = await getRun(participantId, priorByKey.run_id);
+        if (!recovered) throw new ContractError('run_corrupt', 'Idempotent Participant Run is incomplete');
+        const repairedParticipant: ParticipantRecord = existing ? {
+          ...existing,
+          active_run_id: recovered.run.status === 'active' ? recovered.run.run_id : existing.active_run_id,
+          updated_at: now,
+        } : {
+          schema_version: 2,
+          participant_id: participantId,
+          status: 'active',
+          active_run_id: recovered.run.status === 'active' ? recovered.run.run_id : undefined,
+          created_at: recovered.run.created_at || now,
+          updated_at: now,
+        };
+        await writeJsonAtomic(participantFile, repairedParticipant);
+        return { participant: repairedParticipant, run: recovered.run, tasks: recovered.tasks, created: false };
+      }
+
+      // Admission applies to new work. An exact idempotent replay must remain
+      // recoverable after close/retire because the run already committed.
+      assertStudyAdmissionAccepting(registered);
+      // Run records are authoritative. This also covers a crash after the run
+      // directory commit but before participant.active_run_id was persisted.
+      const active = priorRuns.find((candidate) => candidate.status === 'active');
+      if (active) {
+        if (existing?.active_run_id !== active.run_id) {
+          const repairedParticipant: ParticipantRecord = existing ? {
+            ...existing, active_run_id: active.run_id, updated_at: now,
+          } : {
+            schema_version: 2, participant_id: participantId, status: 'active',
+            active_run_id: active.run_id, created_at: active.created_at, updated_at: now,
+          };
+          await writeJsonAtomic(participantFile, repairedParticipant);
+        }
+        throw new ContractError('participant_run_active', 'Participant already has an active run', false, {
+          participantId,
+          activeRunId: active.run_id,
+          studyRevisionId: active.study_revision_id,
+        });
+      }
+      if (!revision.tasks.length) throw new ContractError('invalid_study_revision', 'A run must contain at least one task');
+
+      const runId = newId('run');
+      const participant: ParticipantRecord = {
+        schema_version: 2,
+        participant_id: participantId,
+        status: existing?.status || 'active',
+        active_run_id: runId,
+        created_at: existing?.created_at || now,
+        updated_at: now,
+      };
+      const run: RunRecord = {
+        schema_version: 2,
+        run_id: runId,
+        participant_id: participantId,
+        status: 'active',
+        created_at: now,
+        study_revision_id: revision.studyRevisionId,
+        study_revision_digest: revisionDigest,
+        study_revision: revision,
+        website_snapshot: revision.website,
+        task_count: revision.tasks.length,
+        creation_key: creationKey,
+        creation_request_digest: creationRequestDigest,
+      };
+      const runsRoot = path.join(participantDir(participantId), 'runs');
+      const finalRunDir = path.join(runsRoot, runId);
+      const stagedRunDir = path.join(runsRoot, `.${runId}.staging-${crypto.randomUUID()}`);
+      const tasks: TaskWithAttemptState[] = [];
+      try {
+        await writeJsonAtomic(path.join(stagedRunDir, 'run.json'), run);
+        for (let index = 0; index < revision.tasks.length; index += 1) {
+          const source = revision.tasks[index];
+          const assignmentId = newId('asg');
+          const task: TaskRecord = {
+            schema_version: 2,
+            assignment_id: assignmentId,
+            run_id: runId,
+            participant_id: participantId,
+            position: source.position,
+            source_position: source.sourcePosition,
+            website_task_id: source.websiteTaskId,
+            task_prompt: source.prompt,
+            target_url: source.targetUrl,
+            site_url: source.targetUrl,
+            group: source.group,
+            slug: source.slug,
+            app_id: source.legacyAppId || source.slug,
+            legacy_app_id: source.legacyAppId,
+            is_mind2web: source.isMind2Web,
+            task_source: source.taskSource,
+            suggested_flows: source.suggestedFlows,
+            status: 'pending',
+          };
+          const stagedTask = path.join(
+            stagedRunDir,
+            'tasks',
+            `${String(task.position).padStart(3, '0')}-${assignmentId}`,
+            'task.json',
+          );
+          await writeJsonAtomic(stagedTask, task);
+          tasks.push({ ...task, attempt_count: 0 });
+        }
+        await fs.mkdir(runsRoot, { recursive: true });
+        await fs.rename(stagedRunDir, finalRunDir);
+        await writeJsonAtomic(participantFile, participant);
+      } catch (error) {
+        await fs.rm(stagedRunDir, { recursive: true, force: true }).catch(() => {});
+        throw error;
+      }
+      return { participant, run, tasks, created: true };
+    });
+  });
+}
+
 export async function getActiveRun(participantId: string): Promise<{ run: RunRecord; tasks: TaskWithAttemptState[] } | null> {
   const participant = await readJsonMaybe<ParticipantRecord>(path.join(participantDir(participantId), 'participant.json'));
   if (participant?.status === 'disabled' || participant?.status === 'archived') {
     throw new Error(`Participant is ${participant.status}`);
   }
   if (!participant?.active_run_id) return null;
-  return getRun(participantId, participant.active_run_id);
+  const current = await getRun(participantId, participant.active_run_id);
+  return current?.run.status === 'active' ? current : null;
 }
 
 export async function getRun(participantId: string, runId: string): Promise<{ run: RunRecord; tasks: TaskWithAttemptState[] } | null> {
@@ -300,6 +486,9 @@ export async function createAttempt(input: {
       task_prompt: task.task_prompt,
       site_url: task.site_url,
       website: run.website,
+      study_revision_id: run.study_revision_id,
+      study_revision_digest: run.study_revision_digest,
+      website_snapshot: run.website_snapshot,
     });
     if (session.status !== 'recording'
         || (session.attempt_status && session.attempt_status !== 'recording')) {
@@ -585,12 +774,50 @@ export async function updateParticipantStatus(
 export async function updateRunStatus(
   participantId: string, runId: string, status: 'aborted' | 'archived' | 'active'
 ): Promise<RunRecord> {
-  return withLock(`run:${runId}`, async () => {
+  const updateUnderParticipantLock = async (): Promise<RunRecord> => withLock(`participant:${participantId}`, async () => {
     const file = path.join(runDir(participantId, runId), 'run.json');
-    const current = await readJson<RunRecord>(file);
-    if (current.status === 'completed' && status === 'active') throw new Error('Completed runs cannot be reactivated');
-    const next = { ...current, status };
-    await writeJsonAtomic(file, next);
+    const next = await withLock(`run:${runId}`, async () => {
+      const current = await readJson<RunRecord>(file);
+      if (status === 'active' && (current.status === 'completed' || current.status === 'aborted')) {
+        throw new ContractError('run_terminal', `Run is ${current.status}; terminal runs cannot be reactivated`);
+      }
+      if (status === 'active') {
+        const active = (await listRuns(participantId)).find(
+          (candidate) => candidate.run_id !== runId && candidate.status === 'active',
+        );
+        if (active) {
+          throw new ContractError('participant_run_active', 'Participant already has an active run', false, {
+            participantId, activeRunId: active.run_id, studyRevisionId: active.study_revision_id,
+          });
+        }
+      }
+      const updated = { ...current, status };
+      await writeJsonAtomic(file, updated);
+      return updated;
+    });
+    const participantFile = path.join(participantDir(participantId), 'participant.json');
+    const participant = await readJson<ParticipantRecord>(participantFile);
+    await writeJsonAtomic(participantFile, {
+      ...participant,
+      active_run_id: status === 'active'
+        ? runId
+        : participant.active_run_id === runId ? undefined : participant.active_run_id,
+      updated_at: new Date().toISOString(),
+    });
     return next;
   });
+  // New managed runs must use the same admission lock as creation. Legacy runs
+  // have no study binding and retain the old local-admin compatibility path.
+  if (status === 'active') {
+    const current = await readJson<RunRecord>(path.join(runDir(participantId, runId), 'run.json'));
+    if (current.study_revision_id) {
+      return withStudyRegistrationLock(current.study_revision_id, async () => {
+        const registration = await getStudyRevisionRegistration(current.study_revision_id!);
+        if (!registration) throw new ContractError('study_revision_not_found', 'Study revision was not registered');
+        assertStudyAdmissionAccepting(registration);
+        return updateUnderParticipantLock();
+      });
+    }
+  }
+  return updateUnderParticipantLock();
 }

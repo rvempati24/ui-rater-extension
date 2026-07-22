@@ -1,8 +1,7 @@
 import { redirect } from 'next/navigation';
-import { getParticipantTrials, withResultsLock } from '@/lib/results';
-import { getTrialConfigs } from '@/lib/manifest';
-import { generateTrials } from '@/lib/trials';
 import { isValidParticipant } from '@/lib/participants';
+import { getActiveRun } from '@/lib/participant-store';
+import { projectRunTrials } from '@/lib/run-projections';
 import TrialView from './TrialView';
 
 interface PageProps {
@@ -15,18 +14,8 @@ export default async function TrialPage({ params }: PageProps) {
   const valid = await isValidParticipant(participantId);
   if (!valid) redirect('/');
 
-  let trials = await getParticipantTrials(participantId);
-
-  if (!trials || trials.length === 0) {
-    trials = await withResultsLock(async (data) => {
-      if (data[participantId]?.trials?.length > 0) return data[participantId].trials;
-
-      const configs = await getTrialConfigs();
-      const generated = generateTrials(configs);
-      data[participantId] = { trials: generated };
-      return generated;
-    });
-  }
+  const activeRun = await getActiveRun(participantId);
+  const trials = activeRun ? projectRunTrials(activeRun.run, activeRun.tasks) : [];
 
   if (!trials || trials.length === 0) {
     return (
@@ -34,7 +23,7 @@ export default async function TrialPage({ params }: PageProps) {
         <div className="bg-white rounded-2xl shadow-md p-10 w-full max-w-md text-center">
           <h1 className="text-xl font-semibold text-gray-900 mb-2">No Trials Configured</h1>
           <p className="text-gray-500 text-sm mb-4">
-            The trials config is empty. Add entries to data/trials-config.json and run the setup script.
+            No active Participant Run is configured for this participant. Ask the study operator to start or resume one.
           </p>
         </div>
       </div>

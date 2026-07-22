@@ -182,7 +182,8 @@ test('participant store persists retries, repairs idempotent outcomes, and never
     assert.equal(repaired.idempotent, true);
     assert.equal(repaired.task.status, 'completed');
     assert.equal(readJson(path.join(runRoot, 'run.json')).status, 'completed');
-    assert.equal(readJson(path.join(dataDir, 'shutdown.json')).run_id, created.run.run_id);
+    assert.equal(fs.existsSync(path.join(dataDir, 'shutdown.json')), false,
+      'completing a Participant Run must not control launcher/service lifetime');
     assert.equal(readJson(path.join(attempt3Dir, 'manifest.json')).attempt_status, 'accepted');
     assert.ok(fs.existsSync(path.join(
       runRoot, 'events', `${attempt3.attempt_id}-succeeded.json`

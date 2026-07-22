@@ -4,6 +4,38 @@ This context describes the language for turning one participant's task attempt i
 
 ## Language
 
+### Study orchestration
+
+**Website Artifact**:
+An immutable generated or imported synthetic website bundle together with its normalized task catalog.
+_Avoid_: App, website run, dist folder
+
+**Website Acquisition**:
+The immutable provenance record describing how one Website Artifact was generated or imported. Different acquisitions may resolve to identical artifact content.
+_Avoid_: Download job, source folder
+
+**Website Deployment**:
+A reachable instance of one Website Artifact whose base URL remains stable while it is in use.
+_Avoid_: Website server, localhost port
+
+**Study Revision**:
+An immutable binding between one Website Deployment and an ordered snapshot of selected tasks.
+_Avoid_: Current config, active website, trial config
+
+**Study Admission**:
+The mutable decision whether a Study Revision may create new Participant Runs. Closing admission does not interrupt existing Participant Runs.
+_Avoid_: Study shutdown, server shutdown
+
+**Participant Run**:
+One configured round of work performed by one participant against exactly one Study Revision.
+_Avoid_: Run, session
+
+**Task Assignment**:
+One selected task at a fixed position in a Participant Run.
+_Avoid_: Trial, task config
+
+### Evidence and analysis
+
 **Task Attempt**:
 One participant's execution of one configured task from start through completion, skip, or abandonment.
 _Avoid_: Session, run, recording

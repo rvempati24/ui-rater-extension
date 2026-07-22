@@ -21,18 +21,25 @@ jobs:
         with:
           node-version: "20.20.0"
           cache: npm
-          cache-dependency-path: server/package-lock.json
+          cache-dependency-path: package-lock.json
       - name: Python tests
         run: python -m unittest discover -s tests -p 'test_*.py' -v
-      - name: Install server dependencies
-        working-directory: server
+      - name: Install workspace dependencies
         run: npm ci
       - name: JavaScript and TypeScript tests
-        working-directory: server
         run: npm test
       - name: Typecheck
-        working-directory: server
         run: npm run typecheck
+      - name: Production build
+        run: npm run build
       - name: Lint
-        working-directory: server
         run: npm run lint
+      - name: Real three-service end-to-end tests
+        run: npm run test:e2e
+      - name: Extension syntax
+        run: |
+          node --check popup.js
+          node --check background.js
+          node --check content.js
+          node --check offscreen.js
+          node --check task-session.js
