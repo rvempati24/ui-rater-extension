@@ -5,7 +5,7 @@ Chrome extension that tracks user interactions and records video while participa
 ## Requirements
 
 - Google Chrome (version 116 or later)
-- Node.js (version 18 or later)
+- Node.js **v20 LTS** or **v22 LTS** (odd-numbered versions like 21, 23 are not supported)
 - npm (included with Node.js)
 - Git
 
