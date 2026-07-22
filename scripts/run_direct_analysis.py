@@ -55,8 +55,21 @@ def data_url(path: Path) -> str:
 def input_files(case_dir: Path, case: dict, condition: str) -> tuple[list[Path], list[Path]]:
     manifest = load_evidence_manifest(case_dir, case)
     if condition == TRACE_ONLY_CONDITION:
-        json_files = [case_dir / manifest["case"]["path"], case_dir / manifest["trace"]["path"]]
+        case_record = manifest.get("analysis_case") or manifest.get("case")
+        json_files = [case_dir / case_record["path"], case_dir / manifest["trace"]["path"]]
         image_files: list[Path] = []
+    elif manifest.get("schema_version") == 2:
+        json_files = [case_dir / manifest[key]["path"] for key in (
+            "analysis_case", "trace", "frame_selection", "model_input_sequence"
+        )]
+        json_files.insert(1, case_dir / case.get("evidence_manifest", "evidence-manifest.json"))
+        sequence = json.loads((case_dir / manifest["model_input_sequence"]["path"]).read_text(encoding="utf-8"))
+        by_id = {item["snapshot_id"]: item for item in manifest["snapshots"]}
+        ordered_ids = [
+            item["snapshot_id"] for segment in sequence["segments"] for item in segment["items"]
+        ]
+        json_files.extend(case_dir / by_id[snapshot_id]["metadata"]["path"] for snapshot_id in ordered_ids)
+        image_files = [case_dir / by_id[snapshot_id]["image"]["path"] for snapshot_id in ordered_ids]
     else:
         # Method 3 receives every canonical JSON evidence file, plus the
         # compact analysis case and detached evidence catalog.
@@ -81,8 +94,9 @@ def direct_prompt(condition: str) -> str:
         "snapshot IDs and explain the task impact. Do not perform a generic heuristic audit, infer hidden "
         "implementation details, suggest code changes, or provide implementation recommendations. It is valid "
         "to return an empty findings array when the evidence does not support a UX problem."
-        " A screenshot marked phase=before is best-effort; compare captured_ts with the linked action "
-        "event timestamp before treating it as a true pre-action state."
+        " Screenshots in a primary video-derived case are deterministic frames selected 75 ms before "
+        "the first or 75 ms after the last event of a same-family burst. Use their ordered I/O "
+        "associations and actual decoded PTS when comparing states."
     )
     if condition == TRACE_ONLY_CONDITION:
         return common + (
@@ -96,6 +110,16 @@ def direct_prompt(condition: str) -> str:
 
 def build_content(case_dir: Path, case: dict, condition: str) -> tuple[list[dict], list[dict]]:
     json_files, image_files = input_files(case_dir, case, condition)
+    evidence_manifest = load_evidence_manifest(case_dir, case)
+    sequence_by_id = {}
+    segment_start = set()
+    if evidence_manifest.get("schema_version") == 2 and condition != TRACE_ONLY_CONDITION:
+        sequence = json.loads((case_dir / evidence_manifest["model_input_sequence"]["path"]).read_text(encoding="utf-8"))
+        for segment in sequence["segments"]:
+            if segment["items"]:
+                segment_start.add(segment["items"][0]["snapshot_id"])
+            for item in segment["items"]:
+                sequence_by_id[item["snapshot_id"]] = {**item, "segment_index": segment["segment_index"]}
     content: list[dict] = [{"type": "input_text", "text": direct_prompt(condition)}]
     manifest: list[dict] = []
     for path in json_files:
@@ -111,7 +135,16 @@ def build_content(case_dir: Path, case: dict, condition: str) -> tuple[list[dict
         })
     for path in image_files:
         relative = path.relative_to(case_dir).as_posix()
-        content.append({"type": "input_text", "text": f"Screenshot ID: {path.stem}"})
+        item = sequence_by_id.get(path.stem)
+        if item and path.stem in segment_start:
+            content.append({"type": "input_text", "text": f"Frame segment {item['segment_index']} begins."})
+        label = f"Screenshot ID: {path.stem}"
+        if item:
+            label += "\n" + json.dumps({
+                "actual_video_ts_ms": item["actual_video_ts_ms"],
+                "associations": item["associations"], "io_events": item["io_events"],
+            }, ensure_ascii=False, separators=(",", ":"))
+        content.append({"type": "input_text", "text": label})
         content.append({"type": "input_image", "image_url": data_url(path), "detail": "high"})
         manifest.append({
             "path": relative, "kind": "image", "bytes": path.stat().st_size,
@@ -169,7 +202,8 @@ def validate_findings(
     trace = json.loads((case_dir / case["evidence"]["trace"]).read_text(encoding="utf-8"))
     events = trace.get("interactions", trace if isinstance(trace, list) else [])
     event_ids = {event.get("seq") for event in events if isinstance(event, dict)}
-    snapshot_ids = {Path(path).stem for path in case["evidence"].get("snapshots", [])}
+    manifest = load_evidence_manifest(case_dir, case)
+    snapshot_ids = {item["snapshot_id"] for item in manifest.get("snapshots", [])}
     for finding in findings.get("findings", []):
         evidence = finding.get("evidence") or {}
         cited_events = set(evidence.get("event_seq") or [])

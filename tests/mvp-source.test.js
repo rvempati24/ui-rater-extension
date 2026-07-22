@@ -82,7 +82,7 @@ test('the server analyzer is retired in favor of the controlled experiment entry
     root, 'server', 'app', 'api', 'sessions', '[sessionId]', 'analyze', 'route.ts'
   ), 'utf8');
   assert.match(route, /status: 410/);
-  assert.match(route, /run-ux-experiment\.sh/);
+  assert.match(route, /run-ux-analysis\.sh/);
   assert.ok(fs.existsSync(path.join(root, 'scripts', 'run_ux_experiment.py')));
   const exportConfig = JSON.parse(fs.readFileSync(
     path.join(root, 'scripts', 'trace-export.example.json'), 'utf8'
@@ -98,14 +98,12 @@ test('Method 1 exposes all screenshots for agent selection without pre-attaching
   assert.doesNotMatch(runner, /command\.extend\(\["-i"/);
 });
 
-test('Methods 1 and 3 share the problem-only contract', () => {
-  const materializer = fs.readFileSync(path.join(root, 'scripts', 'materialize_case.py'), 'utf8');
-  const experiment = fs.readFileSync(path.join(root, 'scripts', 'run_ux_experiment.py'), 'utf8');
+test('canonical Method 3 uses the problem-only contract', () => {
+  const materializer = fs.readFileSync(path.join(root, 'scripts', 'materialize_method3_case.py'), 'utf8');
   assert.match(materializer, /ux_problem/);
   assert.match(materializer, /task_impact/);
-  assert.match(materializer, /Do not propose code changes or implementation fixes/);
-  assert.match(experiment, /"1"[\s\S]*"primary": True/);
-  assert.match(experiment, /"3"[\s\S]*"primary": True/);
+  assert.match(materializer, /Do not infer source code/);
+  assert.match(materializer, /analysis_method.*method-3/);
 });
 
 test('completed sessions retain website provenance and attempt metadata', () => {

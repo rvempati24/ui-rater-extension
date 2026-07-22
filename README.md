@@ -249,18 +249,18 @@ sh scripts/materialize-case.sh \
   --output .cases/<attempt-id>
 ```
 
-If the original local website cannot be resolved from run metadata, also pass `--website-source /absolute/path/to/website-run`. The materializer can instead read from Hugging Face with `--hf-repo` and `--hf-revision`.
+The canonical materializer reads only Collection-owned/exported evidence. It does not resolve website source and does not require Website or Manager to be running. A Hugging Face attempt export can be selected with `--hf-repo` and `--hf-revision`.
 
-Run Method 1 with an authenticated Codex CLI:
+Before the first production run, complete [`docs/METHOD3_CALIBRATION.md`](docs/METHOD3_CALIBRATION.md) and replace the pending versioned calibration artifact. Pending or out-of-tolerance calibration makes primary materialization explicitly ineligible.
+
+Run the primary Method 3 analysis through the loopback Responses endpoint:
 
 ```bash
-codex login status
-sh scripts/run-ux-experiment.sh \
-  --case .cases/<attempt-id> \
-  --methods 1
+sh scripts/run-ux-analysis.sh \
+  --case .cases/<attempt-id>
 ```
 
-The primary controlled comparison uses `--methods 1,3`. Method 3 additionally requires a loopback CLIProxyAPI Responses endpoint (default `http://127.0.0.1:8317/v1`). Results are written inside the immutable case revision under `output/`.
+Method 3 requires a loopback CLIProxyAPI Responses endpoint (default `http://127.0.0.1:8317/v1`). It receives the complete policy-selected frame/I/O sequence in one no-tools request; WebM, live auxiliary screenshots, website source, and service state are excluded. Results are written inside the immutable case revision under `output/`.
 
 See [`docs/UX_ANALYSIS_HARNESS.md`](docs/UX_ANALYSIS_HARNESS.md) for method definitions, isolation rules, and comparison requirements.
 
@@ -300,6 +300,6 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 - [`docs/PARTICIPANT_MANAGEMENT_V2.md`](docs/PARTICIPANT_MANAGEMENT_V2.md) — participant/run/task/attempt model
 - [`docs/HF_PARTICIPANT_DATASET_V2.md`](docs/HF_PARTICIPANT_DATASET_V2.md) — export layout and synchronization model
 - [`docs/LLM_AGENT_SANDBOX_V2.md`](docs/LLM_AGENT_SANDBOX_V2.md) — immutable analysis-case contract
-- [`docs/UX_ANALYSIS_HARNESS.md`](docs/UX_ANALYSIS_HARNESS.md) — Method 1–4 analysis harness
+- [`docs/UX_ANALYSIS_HARNESS.md`](docs/UX_ANALYSIS_HARNESS.md) — canonical video-derived Method 3 harness
 
 Files under `docs/superpowers/` are historical design records and do not override the current contract.

@@ -1,5 +1,7 @@
 # Versioned LLM and agent input contract
 
+> Historical Method 1 contract. The canonical production flow is now the source-free, video-derived Method 3 path in `docs/UX_ANALYSIS_HARNESS.md`. This document remains for reproduction only.
+
 ## Decision
 
 `uxBench/ux-task-trace@participant-v3-integrity` is the portable evidence baseline. The materializer pins a dataset commit, verifies the detached attempt manifest, resolves exact website source from run provenance, and publishes a content-addressed case revision. The retired server analyzer is not part of this contract.

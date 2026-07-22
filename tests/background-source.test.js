@@ -70,4 +70,8 @@ test('offscreen recorder permits completion retry after a successful video uploa
 
   assert.match(source, /lastUploadedTask/);
   assert.match(source, /alreadyUploaded/);
+  assert.match(source, /persistPendingRecording\(pendingBlob, recordingTiming\)/);
+  assert.match(source, /videoStartEpochMs: Date\.now\(\)/);
+  assert.match(source, /videoStopEpochMs/);
+  assert.match(source, /lastUploadedTask = \{ uploadKey, timing: recordingTiming \}/);
 });

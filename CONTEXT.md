@@ -56,12 +56,16 @@ _Avoid_: Page, screen, transaction
 A timestamped visual capture and compact semantic description of one UI State.
 _Avoid_: Screenshot, DOM dump
 
+**Video-Derived Snapshot**:
+A deterministic decoded frame associated with a same-family interaction burst, normally 75 ms before its first event or 75 ms after its last event.
+_Avoid_: Live screenshot, settled state
+
 **Friction Signal**:
 A mechanically derived behavioral pattern that may indicate difficulty, such as repeated clicks, backtracking, or a long dwell.
 _Avoid_: UX problem, failure
 
 **UX Finding**:
-A model-generated, evidence-linked claim about a possible usability issue, its severity, and a suggested improvement.
+A model-generated, evidence-linked claim about a possible usability issue, its severity, confidence, and task impact. It does not prescribe a fix.
 _Avoid_: Recommendation, diagnosis
 
 **Evidence Bundle**:

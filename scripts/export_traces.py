@@ -181,6 +181,10 @@ def validate_attempt(
     manifest = load_json(manifest_file) if manifest_file.exists() else None
     if manifest and manifest.get("session_id") != attempt.get("session_id"):
         raise ValueError(f"Attempt {attempt.get('attempt_id')} has a session mismatch")
+    if attempt.get("status") == "accepted" and require_video:
+        timing = (manifest or {}).get("recording_timing")
+        if not isinstance(timing, dict) or timing.get("video_stop_epoch_ms") is None:
+            raise ValueError(f"Attempt {attempt.get('attempt_id')} has no complete recording timing")
     trace_file = attempt_dir / "trace.json"
     trace = load_json(trace_file) if trace_file.exists() else None
     interactions = trace.get("interactions") if trace else None
@@ -319,7 +323,7 @@ def _copy_participant_export_uncommitted(
                 record["path"]: record["sha256"] for record in artifact_records
             }
             relative = target_attempt.relative_to(destination).as_posix()
-            website = run.get("website") or {}
+            website = run.get("website_snapshot") or (run.get("study_revision") or {}).get("website") or {}
             attempt_rows.append({
                 **enriched,
                 "artifact_checksums": artifact_checksums,
@@ -330,8 +334,12 @@ def _copy_participant_export_uncommitted(
                 "task_outcome": task.get("outcome"),
                 "task_reason": task.get("reason"),
                 "task_outcome_at": task.get("outcome_at"),
-                "generator_model": website.get("model"),
-                "website": website.get("website"),
+                "study_revision_id": run.get("study_revision_id"),
+                "study_revision_digest": run.get("study_revision_digest"),
+                "website_artifact_id": website.get("websiteArtifactId"),
+                "website_acquisition_id": website.get("websiteAcquisitionId"),
+                "website_deployment_id": website.get("websiteDeploymentId"),
+                "website_artifact_digest": website.get("artifactDigest"),
                 "artifact_path": relative,
                 "artifact_root_sha256": artifact_manifest["root_sha256"],
                 "artifact_manifest_sha256": artifact_manifest_sha256,

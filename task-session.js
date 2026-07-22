@@ -58,12 +58,12 @@
     let session;
 
     try {
-      await deps.startRecording(options.tabId);
+      const recordingStart = await deps.startRecording(options.tabId);
       recordingStarted = true;
 
       // Timestamp zero is created only after MediaRecorder has acknowledged start.
       session = deps.createSession
-        ? await deps.createSession()
+        ? await deps.createSession(recordingStart)
         : options.session;
       if (!session) throw new Error('Task session was not created');
 

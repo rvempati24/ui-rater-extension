@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   canonicalJson, requestDigest, validateStudyRevision, validateStudySpecification,
   validateWebsiteArtifact, validateWebsiteSourceRequest,
@@ -8,6 +10,16 @@ import {
 test('canonical JSON and request digest are independent of object key order', () => {
   assert.equal(canonicalJson({ b: 2, a: 1 }), '{"a":1,"b":2}');
   assert.equal(requestDigest({ b: 2, a: 1 }), requestDigest({ a: 1, b: 2 }));
+});
+
+test('canonical JSON matches the cross-language golden vectors', () => {
+  const vectors = JSON.parse(fs.readFileSync(path.join(
+    process.cwd(), '..', '..', 'tests', 'fixtures', 'canonical-json-vectors.json'
+  ), 'utf8')) as Array<{ input: unknown; canonical: string; digest: string }>;
+  for (const vector of vectors) {
+    assert.equal(canonicalJson(vector.input), vector.canonical);
+    assert.equal(requestDigest(vector.input), vector.digest);
+  }
 });
 
 test('loader source contracts reject generator and preserve Hugging Face model selectors', () => {

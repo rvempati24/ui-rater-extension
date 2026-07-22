@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "method_id": "mediarecorder-start-plus-visible-transition-v1",
+  "status": "pending",
+  "browser_build": null,
+  "capture_profile": "tab-vp8-30fps-v1",
+  "sample_count": 0,
+  "error_statistic": {
+    "name": "p95_absolute_ms",
+    "value_ms": null,
+    "max_allowed_ms": 50
+  },
+  "protocol": "docs/METHOD3_CALIBRATION.md",
+  "note": "Replace this pending artifact only with measurements from the documented real-browser pilot. Primary Method 3 materialization rejects pending calibration."
+}

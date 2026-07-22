@@ -4,16 +4,14 @@ param(
   [string]$ParticipantsDir = "data\participants",
   [string]$HfRepo = "",
   [string]$HfRevision = "participant-v3-integrity",
-  [string]$WebsiteSource = "",
-  [switch]$NoVideo,
-  [switch]$Audit
+  [string]$Policy = "",
+  [string]$Calibration = ""
 )
-$arguments = @("$PSScriptRoot\materialize_case.py", "--attempt-id", $AttemptId, "--output", $Output)
+$arguments = @("$PSScriptRoot\materialize_method3_case.py", "--attempt-id", $AttemptId, "--output", $Output)
 if ($HfRepo) { $arguments += @("--hf-repo", $HfRepo, "--hf-revision", $HfRevision) }
 else { $arguments += @("--participants-dir", $ParticipantsDir) }
-if ($WebsiteSource) { $arguments += @("--website-source", $WebsiteSource) }
-if ($NoVideo) { $arguments += "--no-video" }
-if ($Audit) { $arguments += "--audit" }
+if ($Policy) { $arguments += @("--policy", $Policy) }
+if ($Calibration) { $arguments += @("--calibration", $Calibration) }
 if ($env:PYTHON) { & $env:PYTHON @arguments }
 elseif (Get-Command py -ErrorAction SilentlyContinue) { & py -3 @arguments }
 else { & python @arguments }

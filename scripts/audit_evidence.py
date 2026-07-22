@@ -225,6 +225,17 @@ def audit(participants_dir: Path) -> dict[str, Any]:
                                     and manifest.get("snapshot_bytes") != snapshot_bytes):
                                 report("snapshot_bytes_mismatch", manifest_file, "manifest bytes differ from JPEG total")
                             if attempt.get("status") == "accepted" and manifest.get("schema_version") == 2:
+                                timing = manifest.get("recording_timing")
+                                timing_values = [
+                                    timing.get(key) if isinstance(timing, dict) else None
+                                    for key in ("video_start_epoch_ms", "trace_origin_epoch_ms",
+                                                "trace_to_video_offset_ms", "video_stop_epoch_ms")
+                                ]
+                                if (not all(isinstance(value, int) for value in timing_values)
+                                        or timing_values[2] != timing_values[1] - timing_values[0]
+                                        or timing_values[3] <= timing_values[0]):
+                                    report("recording_timing_invalid", manifest_file,
+                                           "accepted v2 attempt lacks consistent start/trace/stop timing")
                                 finalization = manifest.get("finalization_report")
                                 if not isinstance(finalization, dict):
                                     finalization = {}

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { withResultsLock } from '@/lib/results';
 import { InteractionEvent } from '@/types';
 import { getParticipantTrials } from '@/lib/results';
-import { loadSession, saveSessionTrace } from '@/lib/sessions';
+import { loadSession, normalizeRecordingTiming, saveSessionTrace } from '@/lib/sessions';
 import { completeAttemptEvidence, getAttempt, getRun } from '@/lib/participant-store';
 import { requireCapability } from '@/lib/capabilities';
 import { projectRunTrials } from '@/lib/run-projections';
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
     sessionId, participantId, trialIndex, view_start, duration_ms,
     runId, assignmentId, attemptId, attemptNumber,
     recording_status, recording_error, final_flush_status, final_flush_error,
-    finalization_report, intended_outcome,
+    finalization_report, intended_outcome, recording_timing,
   } = body;
 
   const hasManagedId = [sessionId, runId, assignmentId, attemptId]
@@ -72,6 +72,9 @@ export async function POST(req: NextRequest) {
     if (canonical.attempt.session_id !== sessionId) throw new Error('Attempt/session mismatch');
     if (canonical.attempt.attempt_number !== attemptNumber) throw new Error('attemptNumber does not match attempt');
     const session = await loadSession(sessionId);
+    const completedRecordingTiming = normalizeRecordingTiming(
+      recording_timing, recording_status !== 'missing'
+    );
     const isRecordingProblem = intended_outcome === 'recording_problem';
     if (!isRecordingProblem) {
       if (final_flush_status !== 'complete'
@@ -109,6 +112,7 @@ export async function POST(req: NextRequest) {
       final_flush_error: typeof final_flush_error === 'string' ? final_flush_error.slice(0, 500) : undefined,
       finalization_report: finalization_report && typeof finalization_report === 'object'
         ? finalization_report : undefined,
+      recording_timing: completedRecordingTiming,
       website,
       study_revision_id: managedRun?.run.study_revision_id,
       study_revision_digest: managedRun?.run.study_revision_digest,

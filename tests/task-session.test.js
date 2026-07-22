@@ -130,9 +130,10 @@ test('rejects recording from a different tab while a task tab is pending', () =>
 
 test('starts recording and tracking on the already authorized tab', async () => {
   const calls = [];
+  const recordingStart = { videoStartEpochMs: 900, startSource: 'mediarecorder-start-event' };
   const deps = {
-    startRecording: async (tabId) => calls.push(['record', tabId]),
-    createSession: async () => session,
+    startRecording: async (tabId) => { calls.push(['record', tabId]); return recordingStart; },
+    createSession: async (value) => { calls.push(['create', value]); return session; },
     storeSession: async (session) => calls.push(['store', session]),
     startTracking: async (tabId, session) => calls.push(['track', tabId, session]),
     stopTracking: async () => {},
@@ -150,6 +151,7 @@ test('starts recording and tracking on the already authorized tab', async () => 
   assert.deepEqual(result, { tabId: 42, sessionId: session.sessionId });
   assert.deepEqual(calls, [
     ['record', 42],
+    ['create', recordingStart],
     ['store', { ...session, taskTabId: 42 }],
     ['track', 42, session],
   ]);

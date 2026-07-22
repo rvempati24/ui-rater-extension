@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAttempt } from '@/lib/participant-store';
 import { capabilityFor, requireCapability } from '@/lib/capabilities';
+import { normalizeRecordingTiming } from '@/lib/sessions';
 
 export async function POST(
   req: NextRequest,
@@ -8,13 +9,14 @@ export async function POST(
 ) {
   const { assignmentId } = await context.params;
   const body = await req.json();
-  if (!body.participantId || !body.runId || !body.sessionId) {
-    return NextResponse.json({ error: 'Missing participantId, runId, or sessionId' }, { status: 400 });
+  if (!body.participantId || !body.runId || !body.sessionId || !body.recordingTiming) {
+    return NextResponse.json({ error: 'Missing participantId, runId, sessionId, or recordingTiming' }, { status: 400 });
   }
   try {
     await requireCapability(req, 'run', body.runId);
     const attempt = await createAttempt({
       participantId: body.participantId, runId: body.runId, assignmentId, sessionId: body.sessionId,
+      recordingTiming: normalizeRecordingTiming(body.recordingTiming),
     });
     return NextResponse.json({
       attempt,

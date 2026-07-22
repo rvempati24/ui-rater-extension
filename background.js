@@ -92,7 +92,11 @@ async function startRecording(tabId) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ type: 'START_RECORDING', streamId }, (res) => {
       if (res?.ok) {
-        resolve();
+        resolve({
+          videoStartEpochMs: res.videoStartEpochMs,
+          startSource: res.startSource,
+          captureProfile: res.captureProfile,
+        });
       } else reject(new Error(res?.error || 'Failed to start recording'));
     });
   });
@@ -159,7 +163,7 @@ async function reusePendingTask(tabId, url) {
   return { status: 'pending', tabId };
 }
 
-async function createSession() {
+async function createSession(recordingStart) {
   const data = await chrome.storage.local.get([
     'participantId', 'collectorUrl', 'serverUrl', 'runId', 'runCapability', 'tasks', 'currentTaskIndex', WORKFLOW_KEY,
   ]);
@@ -167,10 +171,24 @@ async function createSession() {
   if (!data.participantId || !data.runId || !task?.assignment_id) {
     throw new Error('Participant run is not configured');
   }
+  if (!Number.isFinite(recordingStart?.videoStartEpochMs)) {
+    throw new Error('Recorder did not return a measured start time');
+  }
+  const traceOriginEpochMs = Date.now();
+  const recordingTiming = {
+    schemaVersion: 1,
+    clock: 'unix-epoch-ms',
+    videoStartEpochMs: Math.trunc(recordingStart.videoStartEpochMs),
+    traceOriginEpochMs,
+    traceToVideoOffsetMs: traceOriginEpochMs - Math.trunc(recordingStart.videoStartEpochMs),
+    startSource: recordingStart.startSource,
+    captureProfile: recordingStart.captureProfile,
+  };
   const session = {
     sessionId: data[WORKFLOW_KEY]?.sessionId || crypto.randomUUID(),
-    originTime: Date.now(),
+    originTime: traceOriginEpochMs,
     viewStart: new Date().toISOString(),
+    recordingTiming,
   };
   const response = await fetch(
     `${collectorUrlFrom(data)}/api/assignments/${encodeURIComponent(task.assignment_id)}/attempts`,
@@ -179,7 +197,10 @@ async function createSession() {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${data.runCapability || ''}`,
       },
-      body: JSON.stringify({ participantId: data.participantId, runId: data.runId, sessionId: session.sessionId }),
+      body: JSON.stringify({
+        participantId: data.participantId, runId: data.runId,
+        sessionId: session.sessionId, recordingTiming,
+      }),
     }
   );
   const body = await response.json().catch(() => ({}));
@@ -244,7 +265,7 @@ async function startTaskFlow(msg) {
     createSession,
     storeSession: async ({
       sessionId, originTime, viewStart, taskTabId, runId, assignmentId,
-      attemptId, attemptNumber, attemptCapability,
+      attemptId, attemptNumber, attemptCapability, recordingTiming,
     }) => {
       const taskTab = await chrome.tabs.get(taskTabId);
       await chrome.storage.local.set({
@@ -264,7 +285,7 @@ async function startTaskFlow(msg) {
           nextEventSeq: 1,
           snapshotCount: 0,
           lastSnapshotAt: 0,
-          runId, assignmentId, attemptId, attemptNumber, attemptCapability,
+          runId, assignmentId, attemptId, attemptNumber, attemptCapability, recordingTiming,
         },
         [WORKFLOW_KEY]: {
           phase: 'recording', sessionId, runId, assignmentId, attemptId, attemptNumber,
@@ -697,6 +718,10 @@ async function finishAttemptEvidence(msg) {
       attemptNumber: finalSession.attemptNumber,
       recording_status: recordingStatus,
       recording_error: recordingError,
+      recording_timing: {
+        ...finalSession.recordingTiming,
+        videoStopEpochMs: recordingResult.videoStopEpochMs,
+      },
       final_flush_status: msg.finalFlushStatus || 'complete',
       final_flush_error: msg.finalFlushError,
       finalization_report: msg.finalizationReport,

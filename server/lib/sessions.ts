@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import type { InteractionEvent, SessionManifest, SnapshotMetadata } from '@/types';
+import type { InteractionEvent, RecordingTiming, SessionManifest, SnapshotMetadata } from '@/types';
 import { SESSIONS_DIR } from './paths.ts';
 import { writeFileAtomic, writeJsonAtomic } from './atomic-file.ts';
 import { withFileLock } from './file-lock.ts';
@@ -15,6 +15,67 @@ const MAX_BATCH_EVENTS = 2_000;
 
 export function assertSessionId(sessionId: string): void {
   if (!SESSION_ID.test(sessionId)) throw new Error('Invalid sessionId');
+}
+
+function finiteInteger(value: unknown, name: string): number {
+  if (!Number.isFinite(value) || !Number.isInteger(value)) throw new Error(`${name} must be a finite integer`);
+  return value as number;
+}
+
+export function normalizeRecordingTiming(value: unknown, requireStop = false): RecordingTiming {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('recordingTiming must be an object');
+  }
+  const input = value as Record<string, unknown>;
+  const videoStart = finiteInteger(input.videoStartEpochMs ?? input.video_start_epoch_ms, 'videoStartEpochMs');
+  const traceOrigin = finiteInteger(input.traceOriginEpochMs ?? input.trace_origin_epoch_ms, 'traceOriginEpochMs');
+  const offset = finiteInteger(input.traceToVideoOffsetMs ?? input.trace_to_video_offset_ms, 'traceToVideoOffsetMs');
+  const stopValue = input.videoStopEpochMs ?? input.video_stop_epoch_ms;
+  const videoStop = stopValue === undefined ? undefined : finiteInteger(stopValue, 'videoStopEpochMs');
+  if (videoStart <= 0 || traceOrigin <= 0 || traceOrigin < videoStart) throw new Error('Invalid recording clock order');
+  if (offset !== traceOrigin - videoStart || offset < 0 || offset > 60_000) {
+    throw new Error('recording timing offset is inconsistent');
+  }
+  if (requireStop && videoStop === undefined) throw new Error('recording stop time is required');
+  if (videoStop !== undefined && videoStop <= videoStart) throw new Error('recording stop must follow start');
+  const startSource = input.startSource ?? input.start_source;
+  if (startSource !== 'mediarecorder-start-event') throw new Error('Unsupported recording start source');
+  const profileInput = input.captureProfile ?? input.capture_profile;
+  const profile = profileInput && typeof profileInput === 'object' && !Array.isArray(profileInput)
+    ? profileInput as Record<string, unknown> : undefined;
+  const optionalNumber = (candidate: unknown) => Number.isFinite(candidate) && Number(candidate) > 0
+    ? Number(candidate) : undefined;
+  return {
+    schema_version: 1,
+    clock: 'unix-epoch-ms',
+    video_start_epoch_ms: videoStart,
+    trace_origin_epoch_ms: traceOrigin,
+    trace_to_video_offset_ms: offset,
+    start_source: 'mediarecorder-start-event',
+    video_stop_epoch_ms: videoStop,
+    capture_profile: profile ? {
+      profile_id: typeof (profile.profileId ?? profile.profile_id) === 'string'
+        ? String(profile.profileId ?? profile.profile_id).slice(0, 80) : undefined,
+      codec: typeof profile.codec === 'string' ? profile.codec.slice(0, 40) : undefined,
+      requested_frame_rate: optionalNumber(profile.requestedFrameRate ?? profile.requested_frame_rate),
+      width: optionalNumber(profile.width), height: optionalNumber(profile.height),
+      frame_rate: optionalNumber(profile.frameRate ?? profile.frame_rate),
+    } : undefined,
+  };
+}
+
+function mergeRecordingTiming(current: RecordingTiming | undefined, next: RecordingTiming | undefined): RecordingTiming | undefined {
+  if (!next) return current;
+  if (!current) return next;
+  const withoutStop = (timing: RecordingTiming) => ({ ...timing, video_stop_epoch_ms: undefined });
+  if (JSON.stringify(withoutStop(current)) !== JSON.stringify(withoutStop(next))) {
+    throw new Error('Conflicting recording timing metadata');
+  }
+  if (current.video_stop_epoch_ms !== undefined && next.video_stop_epoch_ms !== undefined
+      && current.video_stop_epoch_ms !== next.video_stop_epoch_ms) {
+    throw new Error('Conflicting recording stop time');
+  }
+  return { ...current, video_stop_epoch_ms: current.video_stop_epoch_ms ?? next.video_stop_epoch_ms };
 }
 
 export function getSessionDir(sessionId: string): string {
@@ -45,6 +106,7 @@ async function updateManifestUnlocked(
   const current = await readJson<SessionManifest | null>(file, null);
   if (!current) throw new Error('Unknown session');
   const safePatch: Partial<SessionManifest> = { ...patch };
+  safePatch.recording_timing = mergeRecordingTiming(current.recording_timing, patch.recording_timing);
   if (current.status === 'complete' && patch.status === 'recording') {
     safePatch.status = 'complete';
     delete safePatch.attempt_status;
@@ -111,7 +173,9 @@ export async function initializeSession(
           throw new Error('Session ownership mismatch');
         }
       }
+      const mergedTiming = mergeRecordingTiming(current.recording_timing, manifest.recording_timing);
       const enriched = { ...manifest, ...current };
+      enriched.recording_timing = mergedTiming;
       await writeJsonAtomic(file, enriched);
       return enriched;
     }

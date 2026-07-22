@@ -169,7 +169,7 @@ def load_evidence_manifest(case_dir: Path, case: dict, verify: bool = True) -> d
             "Case has no safe canonical evidence manifest; rematerialize it with materialize-case"
         )
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 1 or manifest.get("attempt_id") != case.get("attempt_id"):
+    if manifest.get("schema_version") not in {1, 2} or manifest.get("attempt_id") != case.get("attempt_id"):
         raise ValueError("Evidence manifest does not match case.json")
     if verify:
         expected_root = manifest.get("root_sha256")
@@ -178,10 +178,22 @@ def load_evidence_manifest(case_dir: Path, case: dict, verify: bool = True) -> d
             raise ValueError("Evidence manifest has no root hash")
         if canonical_sha256(root_input) != expected_root:
             raise ValueError("Evidence manifest root hash mismatch")
-        records = [manifest["case"], manifest["trace"]]
-        for snapshot in manifest.get("snapshots", []):
-            records.extend([snapshot["metadata"], snapshot["image"]])
+        if manifest["schema_version"] == 1:
+            records = [manifest["case"], manifest["trace"]]
+            for snapshot in manifest.get("snapshots", []):
+                records.extend([snapshot["metadata"], snapshot["image"]])
+        else:
+            records = [manifest[key] for key in (
+                "analysis_case", "trace", "recording", "frame_selection", "model_input_sequence"
+            )]
+            for group in ("snapshots", "auxiliary_live_snapshots"):
+                for snapshot in manifest.get(group, []):
+                    records.extend([snapshot["metadata"], snapshot["image"]])
+        seen_paths = set()
         for record in records:
+            if record.get("path") in seen_paths:
+                raise ValueError("Evidence manifest contains duplicate paths")
+            seen_paths.add(record.get("path"))
             raw_candidate = case_dir / record["path"]
             candidate = raw_candidate.resolve()
             if case_dir != candidate and case_dir not in candidate.parents:
@@ -191,6 +203,15 @@ def load_evidence_manifest(case_dir: Path, case: dict, verify: bool = True) -> d
                     or candidate.stat().st_size != record.get("bytes")
                     or sha256_file(candidate) != record["sha256"]):
                 raise ValueError(f"Evidence manifest hash mismatch: {record['path']}")
+        if manifest["schema_version"] == 2:
+            sequence = json.loads((case_dir / manifest["model_input_sequence"]["path"]).read_text(encoding="utf-8"))
+            sequence_ids = {
+                item["snapshot_id"] for segment in sequence.get("segments", [])
+                for item in segment.get("items", [])
+            }
+            snapshot_ids = {item["snapshot_id"] for item in manifest.get("snapshots", [])}
+            if sequence_ids != snapshot_ids or len(snapshot_ids) != len(manifest.get("snapshots", [])):
+                raise ValueError("Evidence manifest snapshot graph is not closed")
     return manifest
 
 

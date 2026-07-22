@@ -391,12 +391,11 @@ sh scripts/materialize-case.sh \
   --attempt-id <attempt-id> \
   --output .cases/<attempt-id>
 
-sh scripts/run-ux-experiment.sh \
-  --case .cases/<attempt-id> \
-  --methods 1
+sh scripts/run-ux-analysis.sh \
+  --case .cases/<attempt-id>
 ```
 
-Exports and `.cases/` are derived outputs. They do not become part of canonical attempt evidence.
+Exports and `.cases/` are derived outputs. They do not become part of canonical attempt evidence. Materialization and analysis read only Collection data and run with Website and Manager stopped. The primary case contains the full WebM for integrity but sends only NAPsack-style same-family burst frames (first event -75 ms, last event +75 ms) and their ordered I/O to Method 3.
 
 ## Failure and recovery guide
 

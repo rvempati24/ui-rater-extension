@@ -8,7 +8,7 @@ import {
   validateStudyRevision,
   type StudyRevisionDescriptor,
 } from '@ui-rater/contracts';
-import type { TrialConfigEntry, WebsiteMetadata } from '@/types';
+import type { RecordingTiming, TrialConfigEntry, WebsiteMetadata } from '@/types';
 import { PARTICIPANT_DATA_DIR, SESSIONS_DIR } from './paths.ts';
 import { writeFileAtomic, writeJsonAtomic } from './atomic-file.ts';
 import { withFileLock } from './file-lock.ts';
@@ -441,6 +441,7 @@ async function findTask(participantId: string, runId: string, assignmentId: stri
 
 export async function createAttempt(input: {
   participantId: string; runId: string; assignmentId: string; sessionId: string;
+  recordingTiming: RecordingTiming;
 }): Promise<AttemptRecord> {
   assertId(input.assignmentId, 'assignmentId');
   assertSessionId(input.sessionId);
@@ -458,7 +459,15 @@ export async function createAttempt(input: {
     ));
     const sameSession = existing.find((attempt) => attempt?.session_id === input.sessionId);
     if (sameSession) {
-      if (sameSession.status === 'recording') return sameSession;
+      if (sameSession.status === 'recording') {
+        await initializeSession(input.sessionId, {
+          participant_id: input.participantId,
+          run_id: input.runId,
+          assignment_id: input.assignmentId,
+          recording_timing: input.recordingTiming,
+        });
+        return sameSession;
+      }
       throw new Error(`Session already belongs to terminal attempt ${sameSession.attempt_id}`);
     }
     const active = existing.find((attempt) =>
@@ -489,6 +498,7 @@ export async function createAttempt(input: {
       study_revision_id: run.study_revision_id,
       study_revision_digest: run.study_revision_digest,
       website_snapshot: run.website_snapshot,
+      recording_timing: input.recordingTiming,
     });
     if (session.status !== 'recording'
         || (session.attempt_status && session.attempt_status !== 'recording')) {

@@ -24,6 +24,13 @@ test('participant store persists retries, repairs idempotent outcomes, and never
     process.env.UI_RATER_DATA_DIR = dataDir;
     process.env.UI_RATER_SHUTDOWN_FILE = path.join(dataDir, 'shutdown.json');
   try {
+    const recordingTiming = {
+      schema_version: 1, clock: 'unix-epoch-ms',
+      video_start_epoch_ms: 1_780_000_000_000,
+      trace_origin_epoch_ms: 1_780_000_000_100,
+      trace_to_video_offset_ms: 100,
+      start_source: 'mediarecorder-start-event',
+    };
     const storeUrl = pathToFileURL(path.join(
       __dirname, '..', 'server', 'lib', 'participant-store.ts'
     )).href;
@@ -34,6 +41,13 @@ test('participant store persists retries, repairs idempotent outcomes, and never
     const sessions = await import(pathToFileURL(path.join(
       __dirname, '..', 'server', 'lib', 'sessions.ts'
     )).href);
+    assert.equal(
+      sessions.normalizeRecordingTiming(recordingTiming).trace_to_video_offset_ms,
+      100
+    );
+    assert.throws(() => sessions.normalizeRecordingTiming({
+      ...recordingTiming, trace_to_video_offset_ms: 99,
+    }), /offset is inconsistent/);
     const configs = [1, 2].map((position) => ({
       slug: `task-${position}`, group: 'site', plain_app: 'app',
       task_prompt: `Task ${position}`, site_url: 'http://example.test',
@@ -77,13 +91,21 @@ test('participant store persists retries, repairs idempotent outcomes, and never
 
     const session1 = '11111111-1111-4111-8111-111111111111';
     const attempt1 = await store.createAttempt({
+      recordingTiming,
       participantId: 'P001', runId: created.run.run_id,
       assignmentId: task1.assignment_id, sessionId: session1,
     });
     assert.equal((await store.createAttempt({
+      recordingTiming,
       participantId: 'P001', runId: created.run.run_id,
       assignmentId: task1.assignment_id, sessionId: session1,
     })).attempt_id, attempt1.attempt_id, 'same session request is idempotent');
+    await assert.rejects(store.createAttempt({
+      recordingTiming: { ...recordingTiming, trace_origin_epoch_ms: 1_780_000_000_101,
+        trace_to_video_offset_ms: 101 },
+      participantId: 'P001', runId: created.run.run_id,
+      assignmentId: task1.assignment_id, sessionId: session1,
+    }), /Conflicting recording timing/);
     assert.equal((await store.completeAttemptEvidence({
       participantId: 'P001', runId: created.run.run_id, assignmentId: task1.assignment_id,
       attemptId: attempt1.attempt_id, sessionId: session1,
@@ -95,12 +117,14 @@ test('participant store persists retries, repairs idempotent outcomes, and never
     assert.equal(failed.task.status, 'pending');
     assert.equal(readJson(path.join(dataDir, 'sessions', session1, 'manifest.json')).attempt_status, 'failed');
     await assert.rejects(store.createAttempt({
+      recordingTiming,
       participantId: 'P001', runId: created.run.run_id,
       assignmentId: task1.assignment_id, sessionId: session1,
     }), /terminal attempt/);
 
     const session2 = '22222222-2222-4222-8222-222222222222';
     const attempt2 = await store.createAttempt({
+      recordingTiming,
       participantId: 'P001', runId: created.run.run_id,
       assignmentId: task1.assignment_id, sessionId: session2,
     });
@@ -147,6 +171,7 @@ test('participant store persists retries, repairs idempotent outcomes, and never
 
     const session3 = '33333333-3333-4333-8333-333333333333';
     const attempt3 = await store.createAttempt({
+      recordingTiming,
       participantId: 'P001', runId: created.run.run_id,
       assignmentId: task2.assignment_id, sessionId: session3,
     });
@@ -211,6 +236,7 @@ test('participant store persists retries, repairs idempotent outcomes, and never
     );
 
     await assert.rejects(store.createAttempt({
+      recordingTiming,
       participantId: '../escape', runId: created.run.run_id,
       assignmentId: task2.assignment_id, sessionId: session3,
     }), /Invalid participantId/);

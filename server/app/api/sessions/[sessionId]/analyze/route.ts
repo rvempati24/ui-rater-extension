@@ -12,7 +12,7 @@ export async function POST(
   if (denied) return denied;
   const { sessionId } = await context.params;
   return NextResponse.json({
-    error: 'The server-side analyzer is retired. Materialize a versioned case and run scripts/run-ux-experiment.sh.',
+    error: 'The server-side analyzer is retired. Materialize a versioned case and run scripts/run-ux-analysis.sh.',
     sessionId,
   }, { status: 410 });
 }

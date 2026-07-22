@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       UI_RATER_DISABLE_EXTERNAL_WRITES: "1"
     steps:
@@ -22,6 +22,12 @@ jobs:
           node-version: "20.20.0"
           cache: npm
           cache-dependency-path: package-lock.json
+      - name: Install video evidence toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends 'ffmpeg=7:6.1.1-3ubuntu5'
+          ffmpeg -version
+          ffprobe -version
       - name: Python tests
         run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Install workspace dependencies

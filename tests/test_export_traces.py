@@ -44,7 +44,18 @@ def make_attempt(root: Path, status="accepted") -> tuple[Path, Path]:
         "session_id": "session_001", "status": status,
         "outcome": "succeeded" if status == "accepted" else "recording_problem",
     })
-    write_json(attempt / "manifest.json", {"session_id": "session_001", "status": "complete"})
+    write_json(attempt / "manifest.json", {
+        "session_id": "session_001", "status": "complete",
+        "recording_timing": {
+            "schema_version": 1, "clock": "unix-epoch-ms",
+            "video_start_epoch_ms": 1_780_000_000_000,
+            "trace_origin_epoch_ms": 1_780_000_000_100,
+            "trace_to_video_offset_ms": 100,
+            "start_source": "mediarecorder-start-event",
+            "video_stop_epoch_ms": 1_780_000_001_000,
+            "capture_profile": {"profile_id": "tab-vp8-30fps-v1", "frame_rate": 30}
+        }
+    })
     write_json(attempt / "trace.json", {"interactions": [{"seq": 1}]})
     (attempt / "recording.webm").write_bytes(b"video")
     write_json(attempt / "snapshots" / "s0001.json", {"snapshot_id": "s0001"})

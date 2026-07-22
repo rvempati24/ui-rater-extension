@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "policy_id": "method3-napsack-bursts-v1",
+  "basis": "NAPsack Section 3.1 and Appendix A.1-A.2, arXiv:2603.05923",
+  "offsets_ms": {
+    "before_first_event": -75,
+    "after_last_event": 75
+  },
+  "burst_thresholds_ms": {
+    "click": { "gap": 200, "max_duration": 300 },
+    "move": { "gap": 500, "max_duration": 4000 },
+    "scroll": { "gap": 500, "max_duration": 3000 },
+    "key": { "gap": 500, "max_duration": 6000 }
+  },
+  "semantic_attachment_window_ms": 1500,
+  "segment_frames": 60,
+  "output": {
+    "max_frames": 80,
+    "max_total_image_bytes": 52428800,
+    "max_width": 1440,
+    "max_height": 1440,
+    "max_total_pixels": 120000000,
+    "max_model_images": 80,
+    "max_estimated_image_tokens": 120000,
+    "min_median_fps": 24,
+    "max_frame_gap_ms": 100,
+    "jpeg_quality": 80
+  },
+  "calibration": {
+    "method_id": "mediarecorder-start-plus-visible-transition-v1",
+    "required_status": "passed",
+    "error_statistic": "p95_absolute_ms",
+    "max_allowed_ms": 50
+  }
+}

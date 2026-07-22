@@ -102,6 +102,25 @@ export interface SessionManifest {
   study_revision_digest?: string;
   website_snapshot?: StudyRevisionDescriptor['website'];
   finalization_report?: Record<string, unknown>;
+  recording_timing?: RecordingTiming;
+}
+
+export interface RecordingTiming {
+  schema_version: 1;
+  clock: 'unix-epoch-ms';
+  video_start_epoch_ms: number;
+  trace_origin_epoch_ms: number;
+  trace_to_video_offset_ms: number;
+  start_source: 'mediarecorder-start-event';
+  video_stop_epoch_ms?: number;
+  capture_profile?: {
+    profile_id?: string;
+    codec?: string;
+    requested_frame_rate?: number;
+    width?: number;
+    height?: number;
+    frame_rate?: number;
+  };
 }
 
 export interface WebsiteMetadata {

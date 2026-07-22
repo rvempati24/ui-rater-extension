@@ -1,6 +1,7 @@
 let recorder = null;
 let chunks = [];
 let pendingBlob = null;
+let recordingTiming = null;
 let lastUploadedTask = null;
 let recorderStopped = null;
 
@@ -31,12 +32,20 @@ async function recordingStore(mode, operation) {
   }
 }
 
-async function persistPendingBlob(blob) {
-  await recordingStore('readwrite', (store) => store.put(blob, 'pending'));
+async function persistPendingRecording(blob, timing) {
+  await recordingStore('readwrite', (store) => store.put({ blob, timing }, 'pending'));
 }
 
 async function restorePendingBlob() {
-  if (!pendingBlob) pendingBlob = await recordingStore('readonly', (store) => store.get('pending')) || null;
+  if (!pendingBlob) {
+    const stored = await recordingStore('readonly', (store) => store.get('pending')) || null;
+    if (stored instanceof Blob) {
+      pendingBlob = stored;
+    } else if (stored?.blob instanceof Blob) {
+      pendingBlob = stored.blob;
+      recordingTiming = stored.timing || recordingTiming;
+    }
+  }
   return pendingBlob;
 }
 
@@ -47,7 +56,8 @@ async function clearPendingBlob() {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'START_RECORDING') {
-    startRecording(msg.streamId).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: e.message }));
+    startRecording(msg.streamId).then((timing) => sendResponse({ ok: true, ...timing }))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
   }
   if (msg.type === 'STOP_RECORDING') {
@@ -74,11 +84,13 @@ async function startRecording(streamId) {
       mandatory: {
         chromeMediaSource: 'tab',
         chromeMediaSourceId: streamId,
+        maxFrameRate: 30,
       },
     },
   });
 
   chunks = [];
+  recordingTiming = null;
   lastUploadedTask = null;
   recorder = new MediaRecorder(stream, {
     mimeType: 'video/webm;codecs=vp8',
@@ -86,29 +98,58 @@ async function startRecording(streamId) {
   });
 
   const activeRecorder = recorder;
+  let startSettled = false;
   recorder.ondataavailable = (e) => {
     if (e.data.size > 0) chunks.push(e.data);
   };
+  let rejectStopped;
   recorderStopped = new Promise((resolve, reject) => {
-    activeRecorder.onerror = (event) => reject(event.error || new Error('MediaRecorder failed'));
+    rejectStopped = reject;
     activeRecorder.onstop = async () => {
       try {
+        const videoStopEpochMs = Date.now();
+        recordingTiming = { ...recordingTiming, videoStopEpochMs };
         pendingBlob = new Blob(chunks, { type: 'video/webm' });
         chunks = [];
         activeRecorder.stream.getTracks().forEach(t => t.stop());
         if (recorder === activeRecorder) recorder = null;
-        await persistPendingBlob(pendingBlob);
-        resolve();
+        await persistPendingRecording(pendingBlob, recordingTiming);
+        resolve(recordingTiming);
       } catch (error) { reject(error); }
     };
   });
-  recorder.start(1000);
+  const started = new Promise((resolve, reject) => {
+    activeRecorder.onstart = () => {
+      startSettled = true;
+      const settings = activeRecorder.stream.getVideoTracks()[0]?.getSettings?.() || {};
+      recordingTiming = {
+        videoStartEpochMs: Date.now(),
+        startSource: 'mediarecorder-start-event',
+        captureProfile: {
+          profileId: 'tab-vp8-30fps-v1', codec: 'vp8', requestedFrameRate: 30,
+          width: settings.width, height: settings.height, frameRate: settings.frameRate,
+        },
+      };
+      resolve(recordingTiming);
+    };
+    activeRecorder.onerror = (event) => {
+      const error = event.error || new Error('MediaRecorder failed');
+      if (!startSettled) reject(error);
+      rejectStopped?.(error);
+    };
+  });
+  activeRecorder.start(1000);
+  return started.catch((error) => {
+    if (recorder === activeRecorder) recorder = null;
+    activeRecorder.stream.getTracks().forEach(track => track.stop());
+    throw error;
+  });
 }
 
 async function stopRecording(collectorUrl, participantId, taskIndex, managed = {}) {
   if (recorder) {
     if (recorder.state !== 'inactive') recorder.stop();
-    await recorderStopped;
+    recordingTiming = await recorderStopped;
   }
   await restorePendingBlob();
 
@@ -119,7 +160,9 @@ async function stopRecording(collectorUrl, participantId, taskIndex, managed = {
   if (!pendingBlob) {
     const stored = await chrome.storage.local.get(['_lastUploadedRecording']);
     lastUploadedTask = lastUploadedTask || stored._lastUploadedRecording;
-    if (lastUploadedTask === uploadKey) return { ok: true, alreadyUploaded: true };
+    if (lastUploadedTask?.uploadKey === uploadKey || lastUploadedTask === uploadKey) {
+      return { ok: true, alreadyUploaded: true, ...(lastUploadedTask.timing || {}) };
+    }
     return { ok: false, error: 'Not recording', code: 'recorder_unavailable', retryable: false };
   }
 
@@ -138,9 +181,9 @@ async function stopRecording(collectorUrl, participantId, taskIndex, managed = {
     );
     if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
     await clearPendingBlob();
-    lastUploadedTask = uploadKey;
-    await chrome.storage.local.set({ _lastUploadedRecording: uploadKey });
-    return { ok: true };
+    lastUploadedTask = { uploadKey, timing: recordingTiming };
+    await chrome.storage.local.set({ _lastUploadedRecording: lastUploadedTask });
+    return { ok: true, ...recordingTiming };
   } catch (err) {
     return { ok: false, error: err.message, code: 'upload_failed', retryable: true };
   }
@@ -157,6 +200,7 @@ async function cancelRecording() {
     else activeRecorder.stream.getTracks().forEach(t => t.stop());
   }
   chunks = [];
+  recordingTiming = null;
   await clearPendingBlob();
   lastUploadedTask = null;
   recorderStopped = null;
