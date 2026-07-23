@@ -39,6 +39,14 @@ test('popup supports participant runs and explicit task outcomes', () => {
   assert.match(source, /!finalizationResponse && stored\._taskTabId/);
 });
 
+test('popup fills an empty Study Revision from Collection', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'popup.js'), 'utf8');
+
+  assert.match(source, /api\/v1\/study-revisions\/current/);
+  assert.match(source, /if \(\$\('studyRevisionInput'\)\.value\.trim\(\)\) return/);
+  assert.match(source, /fillCurrentStudyRevision/);
+});
+
 test('popup restores both post-recording decision phases', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'popup.js'), 'utf8');
   assert.match(source, /resolveTaskView/);

@@ -85,6 +85,32 @@ export async function getStudyRevisionRegistration(studyRevisionId: string): Pro
   return readRegistrationUnlocked(studyRevisionId);
 }
 
+export async function getCurrentStudyRevision(): Promise<StudyRevisionRegistration | null> {
+  let entries: import('node:fs').Dirent[];
+  try { entries = await fs.readdir(STUDY_REVISIONS_DIR, { withFileTypes: true }); }
+  catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  let current: { registeredAt: string; value: StudyRevisionRegistration } | null = null;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    const value = await readRegistrationUnlocked(entry.name);
+    if (!value || value.registration.admission !== 'accepting') continue;
+    const receipt = await readJsonMaybe<StudyRegistrationReceipt>(
+      path.join(STUDY_REVISIONS_DIR, entry.name, 'registration-receipt.json'),
+    );
+    if (!receipt) throw new ContractError('study_registration_corrupt', 'Stored Study Revision has no registration receipt');
+    if (!current
+      || receipt.registered_at > current.registeredAt
+      || (receipt.registered_at === current.registeredAt
+        && value.revision.studyRevisionId > current.value.revision.studyRevisionId)) {
+      current = { registeredAt: receipt.registered_at, value };
+    }
+  }
+  return current?.value ?? null;
+}
+
 export async function registerStudyRevision(
   rawRevision: unknown,
   idempotencyKey: string,

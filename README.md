@@ -78,7 +78,7 @@ MANAGER_DATA_DIR="$PWD/data/manager" npm run dev:manager
 2. Enable **Developer mode**.
 3. Click **Load unpacked** and select the repository root, not `server/`.
 4. Open the extension popup.
-5. Enter `P001`, Collection URL `http://localhost:3000`, and the Study Revision ID printed by the Manager publication flow.
+5. Enter `P001` and Collection URL `http://localhost:3000`. The extension fills the latest accepting Study Revision ID automatically; manual entry remains available.
 6. Click **Load Tasks**.
 
 Optionally enable **Show a workflow comparison after each task** before loading tasks. It is off by default. After an outcome is submitted, the popup shows the task-authoring agent's frozen reference workflow beside a privacy-safe action summary and a few conservative UX review cues. This local view adds no LLM call and does not change canonical evidence.

@@ -96,6 +96,7 @@ async function init() {
   if (collectorUrl) $('serverInput').value = collectorUrl;
   if (data.studyRevisionId) $('studyRevisionInput').value = data.studyRevisionId;
   $('workflowComparisonInput').checked = data.showWorkflowComparison === true;
+  await fillCurrentStudyRevision().catch(() => {});
 }
 
 function showSetup() {
@@ -104,6 +105,17 @@ function showSetup() {
   $('doneScreen').classList.add('hidden');
   $('workflowComparisonScreen').classList.add('hidden');
   $('statusDot').classList.add('inactive');
+}
+
+async function fillCurrentStudyRevision() {
+  if ($('studyRevisionInput').value.trim()) return;
+  const collectorUrl = $('serverInput').value.trim() || DEFAULT_COLLECTOR;
+  const response = await fetch(`${collectorUrl}/api/v1/study-revisions/current`);
+  if (!response.ok) return;
+  const data = await response.json();
+  if (!data.studyRevisionId) return;
+  $('studyRevisionInput').value = data.studyRevisionId;
+  await chrome.storage.local.set({ collectorUrl, studyRevisionId: data.studyRevisionId });
 }
 
 function hideTaskActions() {
@@ -385,6 +397,7 @@ async function applyOutcomeResult(result) {
 $('startBtn').addEventListener('click', async () => {
   const pid = $('participantInput').value.trim();
   const collectorUrl = $('serverInput').value.trim() || DEFAULT_COLLECTOR;
+  await fillCurrentStudyRevision().catch(() => {});
   const studyRevisionId = $('studyRevisionInput').value.trim();
   const showWorkflowComparisonOption = $('workflowComparisonInput').checked;
   if (!pid) {
@@ -446,6 +459,10 @@ $('startBtn').addEventListener('click', async () => {
     $('startBtn').disabled = false;
     $('startBtn').textContent = 'Load Tasks';
   }
+});
+
+$('serverInput').addEventListener('change', () => {
+  fillCurrentStudyRevision().catch(() => {});
 });
 
 async function clearExtensionCache() {

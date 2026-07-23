@@ -64,11 +64,13 @@ test('Collection binds runs to immutable Study Revisions and serializes admissio
       (error) => error.code === 'idempotency_key_reused'
     );
     await studies.registerStudyRevision(second, 'register-two');
+    assert.equal((await studies.getCurrentStudyRevision()).revision.studyRevisionId, second.studyRevisionId);
     await assert.rejects(
       store.createRunFromStudyRevision('P001', second, 'create-two'),
       (error) => error.code === 'participant_run_active'
     );
     await studies.closeStudyRevision(first.studyRevisionId);
+    assert.equal((await studies.getCurrentStudyRevision()).revision.studyRevisionId, second.studyRevisionId);
     const replayAfterClose = await store.createRunFromStudyRevision('P001', first, 'create-one');
     assert.equal(replayAfterClose.created, false);
     assert.equal(replayAfterClose.run.run_id, created.run.run_id);
