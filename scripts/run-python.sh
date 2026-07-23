@@ -12,5 +12,5 @@ else
   UI_RATER_PYTHON=python3
 fi
 
-"$UI_RATER_PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else "UI Rater requires Python 3.10+")'
+"$UI_RATER_PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else "UI Rater requires Python 3.9+")'
 exec "$UI_RATER_PYTHON" "$@"

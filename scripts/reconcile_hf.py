@@ -12,10 +12,10 @@ import tempfile
 
 try:
     from scripts.export_traces import copy_participant_export
-    from scripts.ux_evidence import canonical_sha256
+    from scripts.collection_json import canonical_sha256
 except ModuleNotFoundError:
     from export_traces import copy_participant_export
-    from ux_evidence import canonical_sha256
+    from collection_json import canonical_sha256
 
 
 def checksum(path: Path) -> str:

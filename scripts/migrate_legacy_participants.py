@@ -15,9 +15,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 try:
-    from scripts.ux_evidence import atomic_write_json
+    from scripts.collection_json import atomic_write_json
 except ModuleNotFoundError:
-    from ux_evidence import atomic_write_json
+    from collection_json import atomic_write_json
 
 
 def require_safe_id(value: object, label: str) -> str:

@@ -99,10 +99,13 @@ test('Method 1 exposes all screenshots for agent selection without pre-attaching
 });
 
 test('canonical Method 3 uses the problem-only contract', () => {
-  const materializer = fs.readFileSync(path.join(root, 'scripts', 'materialize_method3_case.py'), 'utf8');
+  const materializer = fs.readFileSync(path.join(
+    root, 'packages', 'usability-evaluator', 'src',
+    'ui_usability_evaluator', 'materialize.py'
+  ), 'utf8');
   assert.match(materializer, /ux_problem/);
   assert.match(materializer, /task_impact/);
-  assert.match(materializer, /Do not infer source code/);
+  assert.match(materializer, /do not infer source code/i);
   assert.match(materializer, /analysis_method.*method-3/);
 });
 

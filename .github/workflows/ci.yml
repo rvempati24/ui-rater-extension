@@ -30,6 +30,19 @@ jobs:
           ffprobe -version
       - name: Python tests
         run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Standalone evaluator package
+        run: |
+          PYTHONPATH=packages/usability-evaluator/src \
+            python -m unittest discover -s packages/usability-evaluator/tests -v
+          python -m pip wheel ./packages/usability-evaluator \
+            --no-deps --wheel-dir /tmp/evaluator-wheel
+          python -m venv /tmp/evaluator-venv
+          /tmp/evaluator-venv/bin/pip install --no-deps \
+            /tmp/evaluator-wheel/ui_usability_evaluator-*.whl
+          cd /tmp
+          env -u PYTHONPATH /tmp/evaluator-venv/bin/ux-eval --help
+          env -u PYTHONPATH /tmp/evaluator-venv/bin/python -c \
+            'from importlib.resources import files; assert files("ui_usability_evaluator.resources").joinpath("contracts/contract-lock.json").is_file()'
       - name: Install workspace dependencies
         run: npm ci
       - name: JavaScript and TypeScript tests

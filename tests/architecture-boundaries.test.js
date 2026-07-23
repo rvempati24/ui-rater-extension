@@ -48,9 +48,14 @@ test('new deployment routing uses a dedicated origin label', () => {
 });
 
 test('canonical Method 3 materialization is Collection-only and source-free', () => {
-  const materializer = text(path.join(root, 'scripts', 'materialize_method3_case.py'));
+  const materializer = text(path.join(
+    root, 'packages', 'usability-evaluator', 'src',
+    'ui_usability_evaluator', 'materialize.py'
+  ));
+  const compatibility = text(path.join(root, 'scripts', 'materialize_method3_case.py'));
   const wrapper = text(path.join(root, 'scripts', 'materialize-case.sh'));
-  assert.match(wrapper, /materialize_method3_case\.py/);
+  assert.match(wrapper, /ui_usability_evaluator\.cli materialize/);
+  assert.match(compatibility, /ui_usability_evaluator\.cli/);
   assert.doesNotMatch(materializer, /resolve_source|--website-source|hf-websites|website source/i);
   assert.doesNotMatch(materializer, /services\/website-server|services\/manager|Manager client|Website Service client/);
   assert.match(materializer, /study_revision_digest/);

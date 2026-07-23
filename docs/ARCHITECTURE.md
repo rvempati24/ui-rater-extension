@@ -39,7 +39,8 @@ The Manager is a control-plane service. It is not a proxy for task websites, tra
 | Collection Service | `http://127.0.0.1:3000` | Study Revision registrations, participants, runs, assignments, attempts, traces, screenshots, and recordings | Website source or study publication |
 | Manager Service | `http://127.0.0.1:4310` | Study specifications, publication operations, and retirement operations | Website bytes or participant evidence |
 | Chrome extension | Loaded from the repository root | Browser-side workflow and recoverable capture queues | Canonical study or evidence storage |
-| Analysis scripts | `scripts/` | Derived exports and immutable analysis cases | Live collection state |
+| Collection export scripts | `scripts/` | Closed evidence exports and compatibility entrypoints | LLM evaluation |
+| Usability evaluator | offline package | Method 3 cases, assessments, and bounded remediation runs | Service state, publication, or participant allocation |
 
 The shared TypeScript contracts in `packages/contracts/` validate data at HTTP and persistence boundaries. Services exchange IDs and versioned JSON documents; they do not exchange writable filesystem paths. The one exception is the loopback-only operator request that imports a local website into the Website Service.
 
@@ -72,7 +73,7 @@ Run commands from the repository root. The recommended local entry point is a un
 npm install
 ```
 
-Node.js 20.9+ is required. Python 3.10+ and `huggingface_hub` are needed only for Hugging Face acquisition, evidence tooling, or upload.
+Node.js 20.9+ is required. Python 3.9+ and `huggingface_hub` are needed only for Hugging Face acquisition, evidence tooling, or upload.
 
 For a clean separation of service-owned files, choose three different data roots:
 
@@ -383,19 +384,27 @@ sh scripts/export-traces.sh \
   --participants-dir /absolute/path/to/ui-rater-data/collection/participants
 ```
 
-To analyze one accepted attempt:
+To evaluate one terminal attempt, first cross the Collection boundary:
 
 ```bash
-sh scripts/materialize-case.sh \
+npm run export:evidence -- \
   --participants-dir /absolute/path/to/ui-rater-data/collection/participants \
   --attempt-id <attempt-id> \
-  --output .cases/<attempt-id>
+  --output-root ./evidence-bundles \
+  --legacy-task-protocol-bindings ./approved-bindings.json
 
+sh scripts/materialize-case.sh \
+  --bundle ./evidence-bundles/<bundle-id> \
+  --output-root ./.cases/<attempt-id>
 sh scripts/run-ux-analysis.sh \
-  --case .cases/<attempt-id>
+  --case ./.cases/<attempt-id>/revisions/<case-revision-id>
 ```
 
-Exports and `.cases/` are derived outputs. They do not become part of canonical attempt evidence. Materialization and analysis read only Collection data and run with Website and Manager stopped. The primary case contains the full WebM for integrity but sends only NAPsack-style same-family burst frames (first event -75 ms, last event +75 ms) and their ordered I/O to Method 3.
+EvidenceBundles and `.cases/` are immutable derived artifacts; neither becomes
+canonical attempt evidence. The evaluator validates the closed bundle and has no
+path to any service data root. Its case retains the WebM for integrity but sends
+only NAPsack-style same-family burst frames (first event -75 ms, last event +75
+ms) and ordered I/O to Method 3.
 
 ## Failure and recovery guide
 

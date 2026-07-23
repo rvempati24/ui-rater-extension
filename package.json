@@ -22,6 +22,7 @@
     "test:manager": "npm --workspace @ui-rater/manager test",
     "test:architecture": "node --test tests/architecture-boundaries.test.js",
     "test:e2e": "node --import tsx --test tests/three-service.e2e.test.js tests/three-service-real.e2e.test.js",
+    "export:evidence": "sh scripts/run-python.sh scripts/export_evidence_bundle.py",
     "dev:all": "node scripts/dev-all.mjs",
     "dev:website": "node --import tsx services/website-server/src/server.ts",
     "dev:manager": "node --import tsx services/manager/src/server.ts",

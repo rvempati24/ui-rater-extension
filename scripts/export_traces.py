@@ -14,9 +14,9 @@ import tempfile
 import uuid
 
 try:
-    from scripts.ux_evidence import atomic_write_json, canonical_sha256
+    from scripts.collection_json import atomic_write_json, canonical_sha256
 except ModuleNotFoundError:
-    from ux_evidence import atomic_write_json, canonical_sha256
+    from collection_json import atomic_write_json, canonical_sha256
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

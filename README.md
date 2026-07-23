@@ -25,7 +25,8 @@ The repository has three services plus the extension and analysis tooling:
 | `services/manager/` | Study specifications, task selection, publication, and retirement |
 | `services/website-server/` | Website artifacts, acquisitions, deployments, and static serving |
 | `server/` (Collection Service) | Study registrations, participant runs/attempts, APIs, and local evidence |
-| `scripts/` | Evidence audit, export, Hugging Face sync, case materialization, and UX analysis |
+| `scripts/` | Collection-owned evidence audit, export, and compatibility wrappers |
+| `packages/usability-evaluator/` | Temporary standalone Python package for offline Method 3 evaluation and remediation requests |
 
 Each participant can have multiple runs. A run fixes one website and an ordered task list. A task can have multiple immutable attempts, but at most one accepted attempt. The local participant tree is the source of truth; uploads are always explicit.
 
@@ -37,7 +38,7 @@ The extension talks only to Collection. Website target URLs are immutable assign
 
 - Chrome 116+
 - Node.js 20.9+
-- Python 3.10+ only for Hugging Face, export, audit, and analysis scripts
+- Python 3.9+ only for Hugging Face, export, audit, and analysis scripts
 
 ### 1. Install dependencies
 
@@ -239,28 +240,41 @@ The token remains in the server or script process and is not sent to the extensi
 
 PowerShell wrappers are available for export, migration, reconciliation, case materialization, and agent analysis. On Windows, run the evidence audit directly with `python scripts\audit_evidence.py`.
 
-## Analyze one accepted attempt
+## Evaluate one terminal attempt
 
-Materialize an immutable case from the local participant tree:
+Collection first exports a closed EvidenceBundle. Historical attempts require a
+reviewed TaskProtocol binding file:
+
+```bash
+npm run export:evidence -- \
+  --participants-dir /absolute/path/to/data/collection/participants \
+  --attempt-id <attempt-id> \
+  --output-root ./evidence-bundles \
+  --legacy-task-protocol-bindings ./approved-bindings.json
+```
+
+The evaluator then consumes only that bundle:
 
 ```bash
 sh scripts/materialize-case.sh \
-  --attempt-id <attempt-id> \
-  --output .cases/<attempt-id>
-```
+  --bundle ./evidence-bundles/<bundle-id> \
+  --output-root ./.cases/<attempt-id>
 
-The canonical materializer reads only Collection-owned/exported evidence. It does not resolve website source and does not require Website or Manager to be running. A Hugging Face attempt export can be selected with `--hf-repo` and `--hf-revision`.
-
-Before the first production run, complete [`docs/METHOD3_CALIBRATION.md`](docs/METHOD3_CALIBRATION.md) and replace the pending versioned calibration artifact. Pending or out-of-tolerance calibration makes primary materialization explicitly ineligible.
-
-Run the primary Method 3 analysis through the loopback Responses endpoint:
-
-```bash
 sh scripts/run-ux-analysis.sh \
-  --case .cases/<attempt-id>
+  --case ./.cases/<attempt-id>/revisions/<case-revision-id>
 ```
 
-Method 3 requires a loopback CLIProxyAPI Responses endpoint (default `http://127.0.0.1:8317/v1`). It receives the complete policy-selected frame/I/O sequence in one no-tools request; WebM, live auxiliary screenshots, website source, and service state are excluded. Results are written inside the immutable case revision under `output/`.
+Website, Manager, and Collection can be stopped during evaluation. Method 3
+sends the policy-selected action-adjacent frames and ordered trace data through
+a loopback Responses endpoint; it never sends the WebM, website source, or live
+service state. The packaged calibration remains `pending`, so production
+materialization fails until the real-browser protocol in
+[`docs/METHOD3_CALIBRATION.md`](docs/METHOD3_CALIBRATION.md) passes.
+
+The package can also normalize validated findings, create a source snapshot,
+and prepare a deterministic Coding Agent request. Isolated agent execution,
+candidate import, merge, and publication remain separate gates. See the
+[`package README`](packages/usability-evaluator/README.md).
 
 See [`docs/UX_ANALYSIS_HARNESS.md`](docs/UX_ANALYSIS_HARNESS.md) for method definitions, isolation rules, and comparison requirements.
 

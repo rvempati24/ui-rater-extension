@@ -8,8 +8,8 @@ Method 1, Method 2, Method 4, `run_ux_experiment.py`, and their wrappers remain 
 
 ## Evidence flow
 
-1. Collection finalizes `trace.json`, `recording.webm`, live auxiliary screenshots, and measured recording timing.
-2. `scripts/materialize-case.sh` validates the frozen Study Revision and assignment without calling Website or Manager or loading website source.
+1. Collection finalizes `trace.json`, `recording.webm`, and measured recording timing, then atomically exports a closed EvidenceBundle.
+2. `scripts/materialize-case.sh` delegates to the standalone evaluator package, which validates the bundle without reading Collection, Website, or Manager storage.
 3. `video_keyframes.py` groups same-family click, move, scroll, and key events using the versioned NAPsack-derived policy.
 4. Each burst requests the frame 75 ms before its first event and 75 ms after its last event. ffprobe PTS is authoritative; duplicate decoded frames retain all associations.
 5. `model-input-sequence.json` globally orders every derived frame and its I/O. Markers mirror the paper's 60-frame grouping, but Method 3 remains one request.
@@ -28,13 +28,18 @@ The gate also reviews burst coverage, before/after visual validity, duplicate-st
 ```bash
 module load python
 
-sh scripts/materialize-case.sh \
+npm run export:evidence -- \
   --participants-dir /absolute/path/to/ui-rater-data/collection/participants \
   --attempt-id <attempt-id> \
-  --output .cases/<attempt-id>
+  --output-root ./evidence-bundles \
+  --legacy-task-protocol-bindings ./approved-bindings.json
+
+sh scripts/materialize-case.sh \
+  --bundle ./evidence-bundles/<bundle-id> \
+  --output-root ./.cases/<attempt-id>
 
 sh scripts/run-ux-analysis.sh \
-  --case .cases/<attempt-id>
+  --case ./.cases/<attempt-id>/revisions/<case-revision-id>
 ```
 
 The default endpoint is `http://127.0.0.1:8317/v1`. The runner requires loopback HTTP, `store: false`, `tools: []`, strict JSON Schema, and a complete pre-transport input budget check.

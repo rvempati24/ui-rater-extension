@@ -14,9 +14,9 @@ import sys
 import uuid
 
 try:
-    from scripts.ux_evidence import atomic_write_json
+    from scripts.collection_json import atomic_write_json
 except ModuleNotFoundError:
-    from ux_evidence import atomic_write_json
+    from collection_json import atomic_write_json
 
 
 DEFAULT_REPO = "uxBench/website-generation"

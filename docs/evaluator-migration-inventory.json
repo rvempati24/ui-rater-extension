@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "baselineCommit": "a3fd708",
+  "entries": [
+    {
+      "path": "scripts/video_keyframes.py",
+      "responsibility": "video-derived Method 3 frames",
+      "owner": "evaluator",
+      "destination": "src/ui_usability_evaluator/video_keyframes.py",
+      "compatibility": "thin wrapper",
+      "removalGate": "standalone evaluator release"
+    },
+    {
+      "path": "scripts/materialize_method3_case.py",
+      "responsibility": "Method 3 case materialization",
+      "owner": "evaluator",
+      "destination": "src/ui_usability_evaluator/materialize.py",
+      "compatibility": "thin wrapper",
+      "removalGate": "standalone evaluator release"
+    },
+    {
+      "path": "scripts/run_direct_analysis.py",
+      "responsibility": "Method 3 model request",
+      "owner": "evaluator",
+      "destination": "src/ui_usability_evaluator/method3.py",
+      "compatibility": "thin wrapper",
+      "removalGate": "standalone evaluator release"
+    },
+    {
+      "path": "scripts/ux_evidence.py",
+      "responsibility": "legacy collection and analysis helpers",
+      "owner": "split",
+      "destination": "collection helpers stay; evaluator helpers become package-local",
+      "compatibility": "none",
+      "removalGate": "all current consumers classified"
+    },
+    {
+      "path": "scripts/export_evidence_bundle.py",
+      "responsibility": "public attempt export",
+      "owner": "collection",
+      "destination": "retain",
+      "compatibility": "public CLI",
+      "removalGate": "never moved"
+    },
+    {
+      "path": "calibration/method3-recording-alignment-v1.json",
+      "responsibility": "Method 3 eligibility",
+      "owner": "evaluator",
+      "destination": "package resource",
+      "compatibility": "pinned copy during migration",
+      "removalGate": "standalone evaluator release"
+    }
+  ]
+}

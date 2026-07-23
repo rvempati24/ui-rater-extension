@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "contract-lock/v1",
+  "producer": "ui-rater-extension",
+  "contracts": {
+    "evidence-bundle/v1": "sha256:1c5795dca579d2bebb197a9ce9bf4393988abdd07a2440955dce1b43f40549ae",
+    "evidence-payloads/v1": "sha256:571b13905c6285d2b3e3cd34822151ae0cd7279d1b984310d18c9c0c43c58725",
+    "task-protocol/v1": "sha256:7f16d4473dc08a652efd2a502bc373e95c1e6de1b61952f8fcf001c327e37ae4"
+  }
+}

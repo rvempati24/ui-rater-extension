@@ -1,4 +1,7 @@
 #!/bin/sh
 set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec sh "$SCRIPT_DIR/run-python.sh" "$SCRIPT_DIR/run_direct_analysis.py" --condition full "$@"
+REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+PYTHONPATH="$REPO_DIR/packages/usability-evaluator/src${PYTHONPATH:+:$PYTHONPATH}" \
+  exec sh "$SCRIPT_DIR/run-python.sh" -m ui_usability_evaluator.cli \
+  evaluate --condition full "$@"
