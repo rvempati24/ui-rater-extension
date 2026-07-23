@@ -81,6 +81,8 @@ MANAGER_DATA_DIR="$PWD/data/manager" npm run dev:manager
 5. Enter `P001`, Collection URL `http://localhost:3000`, and the Study Revision ID printed by the Manager publication flow.
 6. Click **Load Tasks**.
 
+Optionally enable **Show a workflow comparison after each task** before loading tasks. It is off by default. After an outcome is submitted, the popup shows the task-authoring agent's frozen reference workflow beside a privacy-safe action summary and a few conservative UX review cues. This local view adds no LLM call and does not change canonical evidence.
+
 On a fresh Collection data root, valid participant IDs are bootstrapped from [`server/config/participants.json`](server/config/participants.json) into Collection-owned `data/collection/config/participants.json`. Later admin updates write only the Collection data root.
 
 ### 3. Complete the task

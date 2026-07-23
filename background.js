@@ -634,6 +634,7 @@ async function captureSnapshot(msg, sender) {
 async function finishAttemptEvidence(msg) {
   const data = await chrome.storage.local.get([
     ACTIVE_SESSION_KEY, 'participantId', 'collectorUrl', 'serverUrl', 'currentTaskIndex', 'tasks',
+    'showWorkflowComparison',
   ]);
   const session = data[ACTIVE_SESSION_KEY];
   if (!data.participantId || !data.tasks || !session) throw new Error('Not configured');
@@ -683,6 +684,13 @@ async function finishAttemptEvidence(msg) {
   await sessionWriteLock;
   const latest = await chrome.storage.local.get([ACTIVE_SESSION_KEY]);
   const finalSession = latest[ACTIVE_SESSION_KEY] || session;
+  const task = data.tasks?.[data.currentTaskIndex || 0];
+  const workflowComparison = data.showWorkflowComparison
+    ? UiRaterTaskSession.compareWorkflow(
+      task?.suggested_flows || task?.suggestedFlows || [],
+      finalSession.interactions
+    )
+    : null;
   await reconcileTraceWithServer(data, finalSession);
   if (msg.finalFlushStatus !== 'unavailable' && msg.finalizationReport?.interaction_flush !== 'acknowledged') {
     throw new Error('Final interaction batch was not acknowledged');
@@ -762,10 +770,24 @@ async function finishAttemptEvidence(msg) {
       ACTIVE_SESSION_KEY, WORKFLOW_KEY, '_sessionId', '_originTime', '_viewStart',
       '_taskTabId', '_pendingTaskTabId', '_tracking',
     ]);
+    const completedComparison = refreshed
+      ? UiRaterTaskSession.addWorkflowOutcome(workflowComparison, body.outcome || msg.outcome)
+      : null;
+    if (completedComparison) {
+      await chrome.storage.local.set({
+        _pendingWorkflowComparison: {
+          runId: finalSession.runId,
+          comparison: completedComparison,
+          currentTaskIndex: refreshed?.currentTaskIndex,
+          finished: refreshed ? refreshed.currentTaskIndex >= refreshed.tasks.length : false,
+        },
+      });
+    }
     return {
       ok: true, finalized: true, attemptStatus: body.attemptStatus, outcome: body.outcome,
       currentTaskIndex: refreshed?.currentTaskIndex,
       finished: refreshed ? refreshed.currentTaskIndex >= refreshed.tasks.length : false,
+      workflowComparison: completedComparison,
     };
   }
   await chrome.storage.local.set({
@@ -775,6 +797,7 @@ async function finishAttemptEvidence(msg) {
       ...attemptIdentity,
       intendedOutcome: msg.outcome,
       reason: msg.reason,
+      workflowComparison,
       updatedAt: new Date().toISOString(),
     },
   });
@@ -855,6 +878,19 @@ async function submitAttemptOutcome(outcome, reason) {
     while (nextIndex < tasks.length && tasks[nextIndex]?.status !== 'pending') nextIndex += 1;
   }
   await chrome.storage.local.set({ tasks, currentTaskIndex: nextIndex });
+  const completedComparison = UiRaterTaskSession.addWorkflowOutcome(
+    pending.workflowComparison, outcome
+  );
+  if (completedComparison) {
+    await chrome.storage.local.set({
+      _pendingWorkflowComparison: {
+        runId: pending.runId,
+        comparison: completedComparison,
+        currentTaskIndex: nextIndex,
+        finished: body.runCompleted || nextIndex >= tasks.length,
+      },
+    });
+  }
   await chrome.storage.local.remove([
     WORKFLOW_KEY, ACTIVE_SESSION_KEY, '_tracking', '_sessionId', '_originTime',
     '_viewStart', '_taskTabId',
@@ -870,6 +906,7 @@ async function submitAttemptOutcome(outcome, reason) {
     runCompleted: body.runCompleted,
     currentTaskIndex: nextIndex,
     finished: body.runCompleted || nextIndex >= tasks.length,
+    workflowComparison: completedComparison,
   };
 }
 

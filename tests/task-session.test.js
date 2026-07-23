@@ -2,7 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  beginRecordingOnTab, mergeSnapshotProgress, planTaskStart, resolveTaskView, snapshotAdmission,
+  addWorkflowOutcome, beginRecordingOnTab, compareWorkflow, mergeSnapshotProgress,
+  planTaskStart, resolveTaskView, snapshotAdmission,
 } = require('../task-session.js');
 
 test('reserves the final screenshot slot for task-end', () => {
@@ -106,6 +107,50 @@ test('never tries to record a Chrome internal page', () => {
   });
 
   assert.equal(result.action, 'open');
+});
+
+test('optional workflow comparison summarizes actions without input values', () => {
+  const comparison = compareWorkflow(
+    ['Open the form and submit it.'],
+    [
+      { kind: 'click', text: 'Open form' },
+      { kind: 'input', field: 'email', value: 'secret@example.test' },
+      { kind: 'input', field: 'email', value: 'secret2@example.test' },
+      { kind: 'formsubmit' },
+    ],
+  );
+  assert.deepEqual(comparison.referenceWorkflow, ['Open the form and submit it.']);
+  assert.deepEqual(comparison.actualWorkflow, [
+    'Click control 1', 'Edit field 2', 'Submit form',
+  ]);
+  assert.doesNotMatch(JSON.stringify(comparison), /secret@example/);
+  assert.deepEqual(comparison.uxSignals, []);
+});
+
+test('workflow comparison does not expose page text or DOM identifiers', () => {
+  const comparison = compareWorkflow([], [
+    { kind: 'click', text: 'private-account@example.test', tag: 'button#secret-token' },
+    { kind: 'input', field: 'private-phone', tag: 'input#private-phone', value: '555-0100' },
+  ]);
+  assert.deepEqual(comparison.actualWorkflow, ['Click control 1', 'Edit field 2']);
+  assert.doesNotMatch(
+    JSON.stringify(comparison),
+    /private-account|secret-token|private-phone|555-0100/,
+  );
+});
+
+test('workflow comparison reports conservative friction signals and outcome', () => {
+  const comparison = compareWorkflow([], [
+    { kind: 'click', text: 'Continue' },
+    { kind: 'scroll' },
+    { kind: 'click', text: 'Continue' },
+    { kind: 'scroll' },
+    { kind: 'click', text: 'Continue' },
+  ]);
+  const completed = addWorkflowOutcome(comparison, 'failed_no_retry');
+  assert.match(completed.uxSignals.join(' '), /Repeated action/);
+  assert.match(completed.uxSignals.join(' '), /No reference workflow/);
+  assert.match(completed.uxSignals.join(' '), /failed no retry/);
 });
 
 test('records the pending task tab after the user invokes the extension on it', () => {

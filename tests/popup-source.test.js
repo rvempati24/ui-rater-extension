@@ -57,3 +57,18 @@ test('popup can clear extension cache without calling a server reset', () => {
   assert.match(source, /An attempt is unfinished/);
   assert.doesNotMatch(source, /fetch\([^\n]*\/api\/reset/);
 });
+
+test('workflow comparison is optional, default-off, and shown after outcome', () => {
+  const popup = fs.readFileSync(path.join(__dirname, '..', 'popup.js'), 'utf8');
+  const background = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'popup.html'), 'utf8');
+
+  assert.match(html, /id="workflowComparisonInput"/);
+  assert.doesNotMatch(html, /id="workflowComparisonInput"[^>]*checked/);
+  assert.match(html, /id="workflowComparisonScreen"/);
+  assert.match(background, /data\.showWorkflowComparison\s*\?[\s\S]*compareWorkflow/);
+  assert.match(background, /_pendingWorkflowComparison/);
+  assert.match(background, /completedComparison\s*=\s*refreshed\s*\?/);
+  assert.match(popup, /result\.workflowComparison/);
+  assert.match(html, /These are review cues, not model findings/);
+});

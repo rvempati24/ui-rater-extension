@@ -10,6 +10,7 @@ let state = {
   currentTaskIndex: 0,
   runId: '',
   runCapability: '',
+  showWorkflowComparison: false,
 };
 let operationInFlight = false;
 const ACTION_BUTTON_IDS = [
@@ -39,6 +40,7 @@ async function runExclusive(operation) {
 async function init() {
   const data = await chrome.storage.local.get([
     'participantId', 'collectorUrl', 'serverUrl', 'studyRevisionId', 'tasks', 'currentTaskIndex', 'runId', 'runCapability',
+    'showWorkflowComparison', '_pendingWorkflowComparison',
   ]);
   const collectorUrl = data.collectorUrl || data.serverUrl || DEFAULT_COLLECTOR;
   if (data.participantId && data.tasks && data.studyRevisionId) {
@@ -79,7 +81,13 @@ async function init() {
       currentTaskIndex: data.currentTaskIndex || 0,
       runId: data.runId || '',
       runCapability: data.runCapability || '',
+      showWorkflowComparison: data.showWorkflowComparison === true,
     };
+    $('workflowComparisonInput').checked = state.showWorkflowComparison;
+    if (data._pendingWorkflowComparison?.runId === state.runId) {
+      showWorkflowComparison(data._pendingWorkflowComparison);
+      return;
+    }
     if (state.currentTaskIndex >= state.tasks.length) await showDone();
     else await showTask();
     return;
@@ -87,12 +95,14 @@ async function init() {
   showSetup();
   if (collectorUrl) $('serverInput').value = collectorUrl;
   if (data.studyRevisionId) $('studyRevisionInput').value = data.studyRevisionId;
+  $('workflowComparisonInput').checked = data.showWorkflowComparison === true;
 }
 
 function showSetup() {
   $('setupScreen').classList.remove('hidden');
   $('taskScreen').classList.add('hidden');
   $('doneScreen').classList.add('hidden');
+  $('workflowComparisonScreen').classList.add('hidden');
   $('statusDot').classList.add('inactive');
 }
 
@@ -141,6 +151,7 @@ async function showTask() {
   $('setupScreen').classList.add('hidden');
   $('taskScreen').classList.remove('hidden');
   $('doneScreen').classList.add('hidden');
+  $('workflowComparisonScreen').classList.add('hidden');
   $('statusDot').classList.remove('inactive');
 
   const task = state.tasks[state.currentTaskIndex];
@@ -201,6 +212,7 @@ async function showDone() {
   $('setupScreen').classList.add('hidden');
   $('taskScreen').classList.add('hidden');
   $('doneScreen').classList.remove('hidden');
+  $('workflowComparisonScreen').classList.add('hidden');
   $('statusDot').classList.add('inactive');
   $('hfUploadChoice').classList.remove('hidden');
   $('hfUploadStatus').classList.add('hidden');
@@ -237,6 +249,48 @@ async function showDone() {
   } catch {
     // The launcher may already be closed after a previously recorded decision.
   }
+}
+
+function fillWorkflowList(id, values, emptyText) {
+  const list = $(id);
+  list.textContent = '';
+  const items = values?.length ? values : [emptyText];
+  for (const value of items) {
+    const item = document.createElement('li');
+    item.textContent = value;
+    list.appendChild(item);
+  }
+}
+
+function showWorkflowComparison(review) {
+  $('setupScreen').classList.add('hidden');
+  $('taskScreen').classList.add('hidden');
+  $('doneScreen').classList.add('hidden');
+  $('workflowComparisonScreen').classList.remove('hidden');
+  const comparison = review.comparison || review;
+  fillWorkflowList(
+    'referenceWorkflowList', comparison.referenceWorkflow,
+    'No reference workflow was provided.'
+  );
+  fillWorkflowList(
+    'actualWorkflowList', comparison.actualWorkflow,
+    'No comparable actions were recorded.'
+  );
+  fillWorkflowList(
+    'workflowSignalList', comparison.uxSignals,
+    'No obvious heuristic UX signal was detected.'
+  );
+}
+
+async function continueAfterWorkflowComparison() {
+  const stored = await chrome.storage.local.get(['_pendingWorkflowComparison']);
+  const review = stored._pendingWorkflowComparison;
+  await chrome.storage.local.remove(['_pendingWorkflowComparison']);
+  if (review?.currentTaskIndex !== undefined) {
+    state.currentTaskIndex = review.currentTaskIndex;
+  }
+  if (review?.finished || state.currentTaskIndex >= state.tasks.length) await showDone();
+  else await showTask();
 }
 
 function showError(containerId, msg) {
@@ -316,6 +370,14 @@ async function submitOutcome(outcome, reason) {
 
 async function applyOutcomeResult(result) {
   state.currentTaskIndex = result.currentTaskIndex ?? state.currentTaskIndex;
+  if (result.workflowComparison) {
+    showWorkflowComparison({
+      comparison: result.workflowComparison,
+      currentTaskIndex: state.currentTaskIndex,
+      finished: result.finished,
+    });
+    return;
+  }
   if (result.finished || state.currentTaskIndex >= state.tasks.length) await showDone();
   else await showTask();
 }
@@ -324,6 +386,7 @@ $('startBtn').addEventListener('click', async () => {
   const pid = $('participantInput').value.trim();
   const collectorUrl = $('serverInput').value.trim() || DEFAULT_COLLECTOR;
   const studyRevisionId = $('studyRevisionInput').value.trim();
+  const showWorkflowComparisonOption = $('workflowComparisonInput').checked;
   if (!pid) {
     showError('setupError', 'Please enter a participant ID.');
     return;
@@ -367,9 +430,13 @@ $('startBtn').addEventListener('click', async () => {
       currentTaskIndex: data.currentTaskIndex || 0,
       runId: data.runId,
       runCapability: data.runCapability,
+      showWorkflowComparison: showWorkflowComparisonOption,
     };
     await chrome.storage.local.set(state);
-    await chrome.storage.local.set({ collectorUrl, studyRevisionId });
+    await chrome.storage.local.set({
+      collectorUrl, studyRevisionId,
+      showWorkflowComparison: showWorkflowComparisonOption,
+    });
     if (startNewRun) await chrome.storage.local.remove(['_runCreationKey']);
     if (state.currentTaskIndex >= state.tasks.length) await showDone();
     else await showTask();
@@ -397,12 +464,13 @@ async function clearExtensionCache() {
   await chrome.storage.local.clear();
   state = {
     participantId: '', collectorUrl: DEFAULT_COLLECTOR, studyRevisionId: '', tasks: null,
-    currentTaskIndex: 0, runId: '', runCapability: '',
+    currentTaskIndex: 0, runId: '', runCapability: '', showWorkflowComparison: false,
   };
   showSetup();
   $('participantInput').value = '';
   $('serverInput').value = DEFAULT_COLLECTOR;
   $('studyRevisionInput').value = '';
+  $('workflowComparisonInput').checked = false;
   $('setupError').textContent = 'Extension cache cleared. Server recordings were not changed.';
   $('setupError').style.color = '#15803d';
   $('setupError').classList.remove('hidden');
@@ -607,16 +675,21 @@ $('keepLocalBtn').addEventListener('click', () => runExclusive(async () => {
   setCompletionStatus(message);
 }));
 
+$('continueAfterComparisonBtn').addEventListener('click', () => runExclusive(
+  continueAfterWorkflowComparison
+));
+
 $('resetBtn').addEventListener('click', async () => {
   await chrome.storage.local.remove([
     'participantId', 'studyRevisionId', 'tasks', 'currentTaskIndex', 'runId', 'runCapability', '_tracking', '_sessionId',
     '_originTime', '_viewStart', '_taskTabId', '_runTaskTabId', '_pendingTaskTabId', '_activeSession',
     '_taskWorkflow',
     '_completedRunDecision',
+    '_pendingWorkflowComparison', 'showWorkflowComparison',
   ]);
   state = {
     participantId: '', collectorUrl: state.collectorUrl, studyRevisionId: '', tasks: null,
-    currentTaskIndex: 0, runId: '', runCapability: '',
+    currentTaskIndex: 0, runId: '', runCapability: '', showWorkflowComparison: false,
   };
   showSetup();
 });

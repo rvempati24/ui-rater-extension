@@ -163,6 +163,10 @@
         <input type="checkbox" id="newRunInput" style="width:auto;">
         Start a new run instead of resuming the active run
       </label>
+      <label style="display:flex; gap:8px; align-items:flex-start; font-size:12px; color:#4b5563;">
+        <input type="checkbox" id="workflowComparisonInput" style="width:auto;margin-top:2px;">
+        Show a workflow comparison after each task
+      </label>
       <button class="btn btn-primary" id="startBtn">Load Tasks</button>
       <div class="error hidden" id="setupError"></div>
     </div>
@@ -220,6 +224,32 @@
       </div>
     </div>
     <div class="error hidden" id="taskError"></div>
+  </div>
+
+  <!-- Optional post-task workflow comparison -->
+  <div class="content hidden" id="workflowComparisonScreen">
+    <div class="done-screen" style="text-align:left;padding:8px 0;">
+      <h2>Workflow comparison</h2>
+      <p style="margin-bottom:12px;">
+        The task-authoring agent's reference workflow compared with recorded user actions.
+      </p>
+      <div class="task-card" style="margin-bottom:10px;">
+        <div class="task-label">Reference workflow</div>
+        <ol id="referenceWorkflowList" style="padding-left:18px;font-size:12px;line-height:1.5;"></ol>
+      </div>
+      <div class="task-card" style="margin-bottom:10px;">
+        <div class="task-label">Recorded workflow</div>
+        <ol id="actualWorkflowList" style="padding-left:18px;font-size:12px;line-height:1.5;"></ol>
+      </div>
+      <div class="task-card" style="margin-bottom:12px;">
+        <div class="task-label">Possible UX signals</div>
+        <ul id="workflowSignalList" style="padding-left:18px;font-size:12px;line-height:1.5;"></ul>
+      </div>
+      <p style="font-size:11px;margin-bottom:12px;">
+        These are review cues, not model findings or proof of a UX problem.
+      </p>
+      <button class="btn btn-primary" id="continueAfterComparisonBtn">Continue</button>
+    </div>
   </div>
 
   <!-- All done screen -->

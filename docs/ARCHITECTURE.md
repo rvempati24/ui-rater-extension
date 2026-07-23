@@ -40,7 +40,7 @@ The Manager is a control-plane service. It is not a proxy for task websites, tra
 | Manager Service | `http://127.0.0.1:4310` | Study specifications, publication operations, and retirement operations | Website bytes or participant evidence |
 | Chrome extension | Loaded from the repository root | Browser-side workflow and recoverable capture queues | Canonical study or evidence storage |
 | Collection export scripts | `scripts/` | Closed evidence exports and compatibility entrypoints | LLM evaluation |
-| Usability evaluator | offline package | Method 3 cases, assessments, and bounded remediation runs | Service state, publication, or participant allocation |
+| Usability evaluator | offline package | Method 3 cases, assessments, and remediation requests | Service state, publication, participant allocation, or coding-agent execution |
 
 The shared TypeScript contracts in `packages/contracts/` validate data at HTTP and persistence boundaries. Services exchange IDs and versioned JSON documents; they do not exchange writable filesystem paths. The one exception is the loopback-only operator request that imports a local website into the Website Service.
 
@@ -230,6 +230,8 @@ When the operation reports `status: "succeeded"`, copy `result.studyRevisionId`.
 
 Leave **Start a new run** unchecked to resume an existing active run for the same participant and Study Revision. A participant cannot have two active runs.
 
+**Show a workflow comparison after each task** is an independent, default-off display option. When enabled, the popup waits until the task outcome is recorded, then compares the task-authoring agent's frozen `suggested_flows` with a compact summary of the participant's recorded actions. The comparison stays in extension-local state so reopening the popup can restore it.
+
 ## What publication does
 
 Manager persists a publication operation before contacting another service. It then performs these idempotent steps:
@@ -305,6 +307,8 @@ Clicking **Done** first finalizes evidence; it does not immediately accept the a
 5. Submit `succeeded`, `failed_retry`, `failed_no_retry`, `skipped`, or `recording_problem` to `/api/attempts/<attempt-id>/outcome`.
 
 Successful attempts become `accepted`. Failed or invalidated evidence remains on disk. A retry creates a new immutable attempt instead of overwriting the earlier one. A Participant Run completes only when every Task Assignment is terminal.
+
+If the optional workflow comparison is enabled, the background worker summarizes the settled trace during finalization and adds the outcome after submission; the popup displays the result only after the outcome is saved. Input values, page text, and DOM identifiers are omitted, controls receive local ordinal labels, consecutive duplicate actions are collapsed, and the view is capped. Repeated clicks, a long action path, a missing reference, or an unsuccessful outcome produce review cues. These heuristics are not evaluator findings, do not modify the attempt, and are not added to the canonical evidence bundle.
 
 Completing a Participant Run does not stop any service, close admission, or retire the study.
 
