@@ -118,6 +118,39 @@ async function fillCurrentStudyRevision() {
   await chrome.storage.local.set({ collectorUrl, studyRevisionId: data.studyRevisionId });
 }
 
+async function resumeOrCreateRun(collectorUrl, participantId, studyRevisionId) {
+  const baseUrl = `${collectorUrl}/api/v1/participants/${encodeURIComponent(participantId)}/runs`;
+  const resumeResponse = await fetch(`${baseUrl}/resume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ studyRevisionId }),
+  });
+  if (resumeResponse.ok) {
+    await chrome.storage.local.remove(['_runCreationKey']);
+    return resumeResponse.json();
+  }
+  const resumeError = await resumeResponse.json().catch(() => ({}));
+  if (resumeResponse.status !== 404 || resumeError.error?.code !== 'active_run_not_found') {
+    throw new Error(resumeError.error?.message || resumeError.error || `Collection returned ${resumeResponse.status}`);
+  }
+
+  const pending = await chrome.storage.local.get(['_runCreationKey']);
+  const runCreationKey = pending._runCreationKey || `runreq_${crypto.randomUUID()}`;
+  await chrome.storage.local.set({ _runCreationKey: runCreationKey });
+  const createResponse = await fetch(baseUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': runCreationKey },
+    body: JSON.stringify({ studyRevisionId }),
+  });
+  if (!createResponse.ok) {
+    const error = await createResponse.json().catch(() => ({}));
+    throw new Error(error.error?.message || error.error || `Collection returned ${createResponse.status}`);
+  }
+  const data = await createResponse.json();
+  await chrome.storage.local.remove(['_runCreationKey']);
+  return data;
+}
+
 function hideTaskActions() {
   for (const id of ['preTrackBtns', 'duringTrackBtns', 'outcomeBtns', 'retryChoiceBtns',
     'recoveryBtns', 'trackingStatus', 'outcomePrompt', 'retryPrompt', 'recoveryPrompt']) {
@@ -411,29 +444,7 @@ $('startBtn').addEventListener('click', async () => {
   $('startBtn').disabled = true;
   $('startBtn').textContent = 'Loading…';
   try {
-    const startNewRun = $('newRunInput').checked;
-    const endpoint = startNewRun
-      ? `${collectorUrl}/api/v1/participants/${encodeURIComponent(pid)}/runs`
-      : `${collectorUrl}/api/v1/participants/${encodeURIComponent(pid)}/runs/resume`;
-    let runCreationKey = '';
-    if (startNewRun) {
-      const pending = await chrome.storage.local.get(['_runCreationKey']);
-      runCreationKey = pending._runCreationKey || `runreq_${crypto.randomUUID()}`;
-      await chrome.storage.local.set({ _runCreationKey: runCreationKey });
-    }
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(startNewRun ? { 'Idempotency-Key': runCreationKey } : {}),
-      },
-      body: JSON.stringify({ studyRevisionId }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || err.error || `Collection returned ${res.status}`);
-    }
-    const data = await res.json();
+    const data = await resumeOrCreateRun(collectorUrl, pid, studyRevisionId);
     if (!data.tasks?.length) throw new Error('No tasks found for this participant.');
     state = {
       participantId: pid,
@@ -450,7 +461,6 @@ $('startBtn').addEventListener('click', async () => {
       collectorUrl, studyRevisionId,
       showWorkflowComparison: showWorkflowComparisonOption,
     });
-    if (startNewRun) await chrome.storage.local.remove(['_runCreationKey']);
     if (state.currentTaskIndex >= state.tasks.length) await showDone();
     else await showTask();
   } catch (err) {

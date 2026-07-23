@@ -28,7 +28,10 @@ test('popup supports participant runs and explicit task outcomes', () => {
   assert.match(source, /failed_retry/);
   assert.match(source, /failed_no_retry/);
   assert.match(source, /recording_problem/);
-  assert.match(html, /Start a new run/);
+  assert.match(html, /An unfinished run is resumed automatically/);
+  assert.doesNotMatch(html, /id="newRunInput"/);
+  assert.match(source, /resumeResponse\.status !== 404/);
+  assert.match(source, /active_run_not_found/);
   assert.match(html, /Task Succeeded/);
   assert.match(html, /Task Failed/);
   assert.match(html, /Retry Task/);

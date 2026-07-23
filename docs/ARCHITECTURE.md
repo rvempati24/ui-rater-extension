@@ -225,10 +225,10 @@ When the operation reports `status: "succeeded"`, copy `result.studyRevisionId`.
 2. Load the repository root with **Load unpacked**.
 3. Enter a configured participant ID, for example `P001`.
 4. Set **Collection URL** to `http://127.0.0.1:3000`.
-5. Enter the published **Study Revision ID**.
-6. Enable **Start a new run** for the participant's first run, then click **Load Tasks**.
+5. Let the extension discover the latest accepting **Study Revision ID**, or enter one manually.
+6. Click **Load Tasks**. The extension resumes an existing active run for the same participant and Study Revision, or creates a new run when none exists.
 
-Leave **Start a new run** unchecked to resume an existing active run for the same participant and Study Revision. A participant cannot have two active runs.
+A participant cannot have two active runs. If its active run belongs to another Study Revision, Collection returns a conflict instead of creating a second run.
 
 **Show a workflow comparison after each task** is an independent, default-off display option. When enabled, the popup waits until the task outcome is recorded, then compares the task-authoring agent's frozen `suggested_flows` with a compact summary of the participant's recorded actions. The comparison stays in extension-local state so reopening the popup can restore it.
 

@@ -171,7 +171,7 @@ For every task, the participant opens the task site, starts recording, performs 
 | **Skip Task** | Closes the task without an accepted attempt |
 | **Recording Problem** | Invalidates the recorder-failure attempt and leaves the task available to retry |
 
-Retries never overwrite earlier attempts. If the same participant needs a new task selection, enable **Start a new run** before loading tasks. Use a fresh participant ID for a clean pilot.
+Retries never overwrite earlier attempts. **Load Tasks** automatically resumes an unfinished run for the same participant and Study Revision, or creates a new run when none exists. Use a fresh participant ID for a clean pilot.
 
 The compatibility wrapper delegates to the already-running services and does not control their lifetime; use the service terminals to stop or restart them.
 
