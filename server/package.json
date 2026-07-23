@@ -6,6 +6,7 @@
     "node": "^20.0.0 || ^22.0.0"
   },
   "scripts": {
+    "postinstall": "node -e \"const fs=require('fs');const p=require('path');const d=p.join(__dirname,'data');fs.mkdirSync(p.join(d,'recordings'),{recursive:true});if(!fs.existsSync(p.join(d,'results.json')))fs.writeFileSync(p.join(d,'results.json'),'{}');\"",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
