@@ -1,12 +1,19 @@
 import fs from 'fs/promises';
+import path from 'path';
 import { Trial, ResultsStore } from '@/types';
 import { RESULTS_PATH } from './paths';
 
 const TMP_PATH = RESULTS_PATH + '.tmp';
 
 async function readResults(): Promise<ResultsStore> {
-  const raw = await fs.readFile(RESULTS_PATH, 'utf-8');
-  return JSON.parse(raw);
+  try {
+    const raw = await fs.readFile(RESULTS_PATH, 'utf-8');
+    return JSON.parse(raw);
+  } catch {
+    await fs.mkdir(path.dirname(RESULTS_PATH), { recursive: true });
+    await fs.writeFile(RESULTS_PATH, '{}', 'utf-8');
+    return {};
+  }
 }
 
 async function writeResults(data: ResultsStore): Promise<void> {
