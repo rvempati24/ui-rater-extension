@@ -150,7 +150,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'BEGIN_TASK') {
     (async () => {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      let tab = null;
+      if (msg.tabId != null) {
+        tab = await chrome.tabs.get(msg.tabId).catch(() => null);
+      }
+      if (!tab) {
+        // Service workers have no "current window"; use the last focused one.
+        [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      }
       sendResponse(await beginTask(tab));
     })();
     return true;

@@ -159,8 +159,12 @@ $('startBtn').addEventListener('click', async () => {
 $('beginTaskBtn').addEventListener('click', async () => {
   showDuringTrack();
 
+  // Resolve the active tab here (the popup has a window context; the service
+  // worker does not) and hand its id to the background.
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
   const res = await new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: 'BEGIN_TASK' }, (r) => resolve(chrome.runtime.lastError ? null : r));
+    chrome.runtime.sendMessage({ type: 'BEGIN_TASK', tabId: tab?.id }, (r) => resolve(chrome.runtime.lastError ? null : r));
   });
 
   if (!res?.ok) {
