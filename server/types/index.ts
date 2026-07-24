@@ -22,6 +22,12 @@ export interface InteractionEvent {
   value?: string;
 }
 
+export interface IssueMarker {
+  ts_ms: number;          // offset into the task recording, in milliseconds
+  note: string;           // participant's description of the usability issue (may be empty)
+  created_at?: string;    // ISO timestamp of when the marker was added
+}
+
 export interface Trial {
   index: number;
   slug: string;                        // full data depot slug
@@ -43,6 +49,7 @@ export interface Trial {
   duration_ms: number | null;
   interactions: InteractionEvent[];
   feedback: string | null;
+  issue_markers?: IssueMarker[];
 }
 
 export interface AppEntry {

@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>UI Rater — Review & Annotate</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f8f9fa;
+      color: #1a1a1a;
+      line-height: 1.5;
+    }
+    .header {
+      background: #2563eb;
+      color: white;
+      padding: 14px 24px;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 20px 24px 60px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.6fr) minmax(300px, 1fr);
+      gap: 24px;
+    }
+    @media (max-width: 860px) { .wrap { grid-template-columns: 1fr; } }
+    .task-card {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+    }
+    .label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #6b7280;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .task-prompt { font-size: 15px; }
+    video {
+      width: 100%;
+      border-radius: 8px;
+      background: #000;
+      display: block;
+    }
+    .video-missing {
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      color: #9a3412;
+      border-radius: 8px;
+      padding: 14px 16px;
+      font-size: 13px;
+    }
+    .flag-row { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+    .btn {
+      padding: 10px 14px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-primary { background: #2563eb; color: white; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-flag { background: #f59e0b; color: white; }
+    .btn-flag:hover { background: #d97706; }
+    .btn-success { background: #16a34a; color: white; }
+    .btn-success:hover { background: #15803d; }
+    .btn-ghost { background: #e5e7eb; color: #374151; }
+    .btn-ghost:hover { background: #d1d5db; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .hint { font-size: 12px; color: #6b7280; }
+    .panel {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .panel h3 { font-size: 14px; margin-bottom: 4px; }
+    .markers { list-style: none; margin: 12px 0 0; }
+    .marker {
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      background: #fafafa;
+    }
+    .marker-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .marker-time {
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+      color: #b45309;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: 999px;
+      padding: 2px 10px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .marker-time:hover { background: #fef3c7; }
+    .marker-del {
+      margin-left: auto;
+      background: none;
+      border: none;
+      color: #9ca3af;
+      font-size: 18px;
+      cursor: pointer;
+      line-height: 1;
+    }
+    .marker-del:hover { color: #dc2626; }
+    .marker textarea, .feedback textarea {
+      width: 100%;
+      min-height: 54px;
+      padding: 8px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: inherit;
+      resize: vertical;
+      outline: none;
+      background: white;
+    }
+    .marker textarea:focus, .feedback textarea:focus { border-color: #2563eb; }
+    .empty { color: #9ca3af; font-size: 13px; padding: 8px 0; }
+    .feedback { margin-top: 20px; }
+    .feedback textarea { min-height: 80px; }
+    .actions { display: flex; gap: 10px; margin-top: 20px; }
+    .actions .btn { flex: 1; }
+    .status { margin-top: 12px; font-size: 13px; }
+    .status.error { color: #dc2626; }
+    .status.ok { color: #16a34a; }
+    .done-banner {
+      max-width: 640px;
+      margin: 60px auto;
+      text-align: center;
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 40px 32px;
+    }
+    .done-banner h2 { font-size: 20px; margin-bottom: 8px; }
+    .done-banner p { color: #6b7280; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="header">UI Rater — Review &amp; Annotate</div>
+
+  <div class="wrap" id="editorWrap">
+    <!-- Left: video + task -->
+    <div>
+      <div class="task-card">
+        <div class="label" id="progressLabel">Task</div>
+        <div class="task-prompt" id="taskPrompt"></div>
+      </div>
+
+      <video id="video" controls playsinline preload="auto"></video>
+      <div id="videoMissing" class="video-missing hidden">
+        The recording for this task wasn't available for playback. You can still
+        describe any usability problems below before continuing.
+      </div>
+
+      <div class="flag-row">
+        <button class="btn btn-flag" id="flagBtn">⚑ Flag issue at <span id="flagTime">0:00</span></button>
+        <span class="hint">Scrub to the moment you hit a problem, then flag it. Add a note to explain.</span>
+      </div>
+    </div>
+
+    <!-- Right: markers + feedback + submit -->
+    <div class="panel">
+      <h3>Usability issues</h3>
+      <div class="hint">Timestamped notes are matched to the video and your interactions for analysis.</div>
+      <ul class="markers" id="markerList"></ul>
+      <div class="empty" id="markerEmpty">No issues flagged yet.</div>
+
+      <div class="feedback">
+        <div class="label">Overall feedback (optional)</div>
+        <textarea id="feedbackInput" placeholder="Anything else about this task — what was confusing, hard to find, or frustrating?"></textarea>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-success" id="submitBtn">Submit &amp; continue</button>
+        <button class="btn btn-ghost" id="skipBtn">No issues — continue</button>
+      </div>
+      <div class="status hidden" id="status"></div>
+    </div>
+  </div>
+
+  <!-- Success banner (shown after submit) -->
+  <div class="done-banner hidden" id="doneBanner">
+    <h2 id="doneTitle">Saved.</h2>
+    <p id="doneText">Open the UI Rater extension to start your next task. You can close this tab.</p>
+  </div>
+
+  <script src="idb.js"></script>
+  <script src="editor.js"></script>
+</body>
+</html>

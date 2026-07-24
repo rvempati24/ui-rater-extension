@@ -123,6 +123,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const viewStart = msg.viewStart;
       const durationMs = msg.durationMs || 0;
       const feedback = msg.feedback || '';
+      const issueMarkers = Array.isArray(msg.issueMarkers) ? msg.issueMarkers : [];
       const taskIndex = (data.currentTaskIndex || 0) + 1;
       const participantId = data.participantId;
 
@@ -137,6 +138,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             duration_ms: durationMs,
             interactions: allInteractions,
             feedback,
+            issue_markers: issueMarkers,
           }),
         });
         if (!res.ok) throw new Error(`Server error: ${res.status}`);

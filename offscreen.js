@@ -49,6 +49,16 @@ async function stopRecording(serverUrl, participantId, taskIndex) {
       recorder.stream.getTracks().forEach(t => t.stop());
       recorder = null;
 
+      // Stash the recording locally so the annotation editor tab can play it
+      // back immediately, without waiting on (or depending on) the upload.
+      if (participantId && taskIndex) {
+        try {
+          await putRecording(recordingKey(participantId, taskIndex), blob);
+        } catch (e) {
+          console.warn('Failed to stash recording for editor:', e?.message || e);
+        }
+      }
+
       if (serverUrl && participantId && taskIndex) {
         try {
           const res = await fetch(

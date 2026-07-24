@@ -220,13 +220,21 @@ $('doneBtn').addEventListener('click', async () => {
     const durationMs = Date.now() - new Date(viewStart).getTime();
     await chrome.storage.local.set({ _durationMs: durationMs, _viewStart: viewStart });
 
-    // Snapshot interactions and stop recording now, before feedback screen
+    // Snapshot interactions and stop recording now, before the review step.
+    // The recording is also stashed to IndexedDB so the editor tab can play it.
     await new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: 'SNAPSHOT_AND_STOP_RECORDING' }, resolve);
     });
 
-    // Show feedback screen
-    showFeedback();
+    // Open the full-tab review & annotation editor. The editor owns task
+    // completion (feedback + timestamped issue markers) for this attempt.
+    try {
+      await chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
+      window.close();
+    } catch {
+      // Fallback: if the editor tab can't open, use the inline feedback screen.
+      showFeedback();
+    }
   } catch (err) {
     showError('taskError', err.message);
   } finally {

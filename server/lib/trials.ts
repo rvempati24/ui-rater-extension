@@ -26,6 +26,7 @@ export function generateTrials(configs: TrialConfigEntry[]): Trial[] {
       duration_ms: null,
       interactions: [],
       feedback: null,
+      issue_markers: [],
     });
   }
 
