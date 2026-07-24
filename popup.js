@@ -154,25 +154,11 @@ $('startBtn').addEventListener('click', async () => {
   }
 });
 
-// Tab URLs that Chrome refuses to tab-capture. Recording must start on a normal
-// web page while the extension's activeTab grant is valid.
-function isCapturableUrl(url) {
-  return /^https?:\/\//i.test(url || '');
-}
-
 // Begin task — start recording on the current tab, then open the site
 $('beginTaskBtn').addEventListener('click', async () => {
   const task = state.tasks[state.currentTaskIndex];
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-
-  // We must capture the currently-active tab (the one the extension was invoked
-  // on) before navigating. If it's a chrome:// or extension page, capture is
-  // impossible — ask the participant to move to a normal tab first.
-  if (!isCapturableUrl(tab.url)) {
-    showError('taskError', 'Open a normal website tab first (not a Chrome or extension page), then click Begin Task.');
-    return;
-  }
 
   const now = Date.now();
   const viewStart = new Date().toISOString();
