@@ -72,6 +72,53 @@ async function snapshotAndStopRecording() {
   await stopRecording(serverUrl, data.participantId, taskIndex);
 }
 
+// Start the current task on the given tab: capture the tab (must happen while
+// the activeTab grant from this invocation is valid), mark tracking, then open
+// the task site. Shared by the popup's Begin button and the begin_task command.
+async function beginTask(tab) {
+  if (!tab || tab.id == null) return { ok: false, error: 'No active tab' };
+
+  const data = await chrome.storage.local.get(['tasks', 'currentTaskIndex', '_tracking']);
+  if (!Array.isArray(data.tasks) || data.tasks.length === 0) return { ok: false, error: 'No tasks loaded' };
+  if (data._tracking) return { ok: false, error: 'A task is already in progress' };
+  const index = data.currentTaskIndex || 0;
+  if (index >= data.tasks.length) return { ok: false, error: 'All tasks complete' };
+  const task = data.tasks[index];
+
+  collectedInteractions = [];
+
+  // Capture first, before any navigation revokes the activeTab grant.
+  let recError = null;
+  try {
+    await startRecording(tab.id);
+  } catch (err) {
+    recError = err.message;
+  }
+
+  const now = Date.now();
+  await chrome.storage.local.set({
+    _tracking: true,
+    _originTime: now,
+    _viewStart: new Date(now).toISOString(),
+  });
+
+  if (task.site_url) {
+    await chrome.tabs.update(tab.id, { url: task.site_url });
+  } else {
+    const started = await new Promise((resolve) => {
+      chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' }, () => resolve(!chrome.runtime.lastError));
+    });
+    if (!started) {
+      try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+        await sendToTab(tab.id, { type: 'START_TRACKING' });
+      } catch { /* page may be uninjectable */ }
+    }
+  }
+
+  return { ok: !recError, error: recError };
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'GET_STATE') {
     chrome.storage.local.get(['participantId', 'serverUrl', 'tasks', 'currentTaskIndex'], (data) => {
@@ -103,14 +150,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'BEGIN_TASK') {
     (async () => {
-      try {
-        // Capture must happen while the activeTab grant is still valid for this
-        // page, i.e. before any navigation (navigation revokes the grant).
-        await startRecording(msg.tabId);
-        sendResponse({ ok: true });
-      } catch (err) {
-        sendResponse({ ok: false, error: err.message });
-      }
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      sendResponse(await beginTask(tab));
     })();
     return true;
   }
@@ -148,6 +189,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         await snapshotAndStopRecording();
 
+        // Mark the attempt as awaiting annotation so the on-page panel shows a
+        // "finish your review" state instead of offering to begin again.
+        await chrome.storage.local.set({ _reviewing: true });
+
         await chrome.windows.create({
           url: chrome.runtime.getURL('editor.html'),
           type: 'popup',
@@ -182,7 +227,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const advanced = (data.currentTaskIndex || 0) + 1;
         const total = data.tasks?.length || 0;
         await chrome.storage.local.set({ currentTaskIndex: advanced });
-        await chrome.storage.local.remove(['_tracking', '_originTime', '_viewStart', '_durationMs', '_snapshotInteractions']);
+        await chrome.storage.local.remove(['_tracking', '_originTime', '_viewStart', '_durationMs', '_snapshotInteractions', '_reviewing']);
 
         sendResponse({ ok: true, finished: advanced >= total });
       } catch (err) {
@@ -224,7 +269,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!res.ok) throw new Error(`Server error: ${res.status}`);
 
         collectedInteractions = [];
-        await chrome.storage.local.remove(['_snapshotInteractions']);
+        await chrome.storage.local.remove(['_snapshotInteractions', '_reviewing', '_tracking', '_originTime', '_viewStart', '_durationMs']);
 
         const nextIndex = taskIndex;
         if (nextIndex < data.tasks.length) {
@@ -260,4 +305,16 @@ chrome.runtime.onInstalled.addListener(() => {
       chrome.storage.local.set({ serverUrl: DEFAULT_SERVER });
     }
   });
+});
+
+// Keyboard shortcut to begin the next task. A command invocation grants the
+// activeTab permission that tab capture needs, so recording can start without
+// opening the toolbar popup.
+chrome.commands.onCommand.addListener(async (command, tab) => {
+  if (command !== 'begin_task') return;
+  let target = tab;
+  if (!target) {
+    [target] = await chrome.tabs.query({ active: true, currentWindow: true });
+  }
+  await beginTask(target);
 });

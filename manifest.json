@@ -16,6 +16,12 @@
   "background": {
     "service_worker": "background.js"
   },
+  "commands": {
+    "begin_task": {
+      "suggested_key": { "default": "Alt+Shift+S" },
+      "description": "Begin / start the next study task"
+    }
+  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],

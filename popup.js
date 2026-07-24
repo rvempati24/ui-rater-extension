@@ -154,32 +154,13 @@ $('startBtn').addEventListener('click', async () => {
   }
 });
 
-// Begin task — start recording on the current tab, then open the site
+// Begin task — the background captures the current tab (this popup click is the
+// activeTab invocation) and opens the task site. The on-page panel takes over.
 $('beginTaskBtn').addEventListener('click', async () => {
-  const task = state.tasks[state.currentTaskIndex];
-
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-
-  const now = Date.now();
-  const viewStart = new Date().toISOString();
-
-  // Persist tracking state BEFORE navigating so the content script auto-resumes.
-  await chrome.storage.local.set({
-    _tracking: true,
-    _originTime: now,
-    _viewStart: viewStart,
-  });
-
-  chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
-
   showDuringTrack();
 
-  // Start tab video recording on the current (capturable, invoked) tab.
   const res = await new Promise((resolve) => {
-    chrome.runtime.sendMessage(
-      { type: 'BEGIN_TASK', tabId: tab.id },
-      (r) => resolve(chrome.runtime.lastError ? null : r),
-    );
+    chrome.runtime.sendMessage({ type: 'BEGIN_TASK' }, (r) => resolve(chrome.runtime.lastError ? null : r));
   });
 
   if (!res?.ok) {
@@ -187,23 +168,6 @@ $('beginTaskBtn').addEventListener('click', async () => {
       'taskError',
       `Screen recording could not start${res?.error ? `: ${res.error}` : ''}. Your interactions are still being tracked.`,
     );
-  }
-
-  // Now navigate to the task site (capture persists across navigation), or start
-  // tracking in place when the task runs on the current page.
-  if (task.site_url) {
-    await chrome.tabs.update(tab.id, { url: task.site_url });
-  } else {
-    chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' }, () => {
-      if (chrome.runtime.lastError) {
-        chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ['content.js'],
-        }).then(() => {
-          chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' });
-        });
-      }
-    });
   }
 });
 

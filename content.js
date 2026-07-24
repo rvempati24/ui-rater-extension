@@ -165,61 +165,132 @@
     window.removeEventListener('resize', onResizeThrottled);
   }
 
-  // On-page control so the participant can end a task without reopening the
-  // toolbar popup. Rendered in a shadow root so page CSS can't affect it.
-  function mountWidget() {
-    if (widgetHost) return;
-    const root = document.body || document.documentElement;
-    if (!root) return;
+  // Persistent on-page panel: shows the current task + progress, the Begin
+  // shortcut when idle, and Done/Skip while recording — so the study runs
+  // without reopening the toolbar popup. Rendered in a shadow root so page CSS
+  // can't affect it, and driven entirely by chrome.storage state.
+  let panelEls = null;
 
+  function buildPanel() {
     widgetHost = document.createElement('div');
     widgetHost.id = WIDGET_ID;
     const shadow = widgetHost.attachShadow({ mode: 'open' });
     shadow.innerHTML = `
       <style>
-        .bar {
-          position: fixed; bottom: 16px; right: 16px; z-index: 2147483647;
-          display: flex; align-items: center; gap: 10px;
-          background: #111827; color: #fff; padding: 8px 10px 8px 14px;
-          border-radius: 999px; box-shadow: 0 4px 16px rgba(0,0,0,0.35);
-          font: 500 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        }
+        .card { position: fixed; bottom: 16px; right: 16px; z-index: 2147483647;
+          width: 280px; background: #111827; color: #fff; border-radius: 12px;
+          box-shadow: 0 6px 24px rgba(0,0,0,0.4); overflow: hidden;
+          font: 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        .top { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+          background: rgba(255,255,255,0.06); }
         .dot { width: 9px; height: 9px; border-radius: 50%; background: #ef4444;
-          animation: p 1.4s infinite; }
-        @keyframes p { 0%,100%{opacity:1} 50%{opacity:.35} }
-        .lbl { margin-right: 4px; white-space: nowrap; }
-        button { border: none; border-radius: 999px; padding: 7px 14px;
+          animation: pl 1.4s infinite; flex: none; }
+        @keyframes pl { 0%,100%{opacity:1} 50%{opacity:.35} }
+        .hdr { font-weight: 600; flex: 1; }
+        .min { background: none; border: none; color: rgba(255,255,255,0.6);
+          cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
+        .body { padding: 10px 12px; }
+        .prompt { color: #e5e7eb; max-height: 96px; overflow-y: auto; }
+        .hint { margin-top: 10px; padding: 8px 10px; background: rgba(59,130,246,0.18);
+          border: 1px solid rgba(59,130,246,0.5); border-radius: 8px; color: #dbeafe;
+          text-align: center; }
+        .hint kbd { background: #1f2937; border: 1px solid #374151; border-radius: 4px;
+          padding: 1px 5px; font: inherit; }
+        .actions { display: flex; gap: 8px; margin-top: 10px; }
+        .actions button { flex: 1; border: none; border-radius: 8px; padding: 8px;
           font: 600 13px inherit; cursor: pointer; }
         .done { background: #16a34a; color: #fff; }
         .done:hover { background: #15803d; }
         .skip { background: #374151; color: #e5e7eb; }
         .skip:hover { background: #4b5563; }
       </style>
-      <div class="bar">
-        <span class="dot"></span>
-        <span class="lbl">Recording task</span>
-        <button class="done" id="w-done">Done</button>
-        <button class="skip" id="w-skip">Skip</button>
+      <div class="card">
+        <div class="top">
+          <span class="dot" id="p-dot"></span>
+          <span class="hdr" id="p-hdr"></span>
+          <button class="min" id="p-min" title="Hide">–</button>
+        </div>
+        <div class="body">
+          <div class="prompt" id="p-prompt"></div>
+          <div class="hint" id="p-hint"></div>
+          <div class="actions" id="p-actions">
+            <button class="done" id="p-done">Done</button>
+            <button class="skip" id="p-skip">Skip</button>
+          </div>
+        </div>
       </div>`;
-    root.appendChild(widgetHost);
-    shadow.getElementById('w-done').addEventListener('click', onWidgetDone);
-    shadow.getElementById('w-skip').addEventListener('click', onWidgetSkip);
+    (document.body || document.documentElement).appendChild(widgetHost);
+    panelEls = {
+      dot: shadow.getElementById('p-dot'),
+      hdr: shadow.getElementById('p-hdr'),
+      prompt: shadow.getElementById('p-prompt'),
+      hint: shadow.getElementById('p-hint'),
+      actions: shadow.getElementById('p-actions'),
+      done: shadow.getElementById('p-done'),
+      skip: shadow.getElementById('p-skip'),
+    };
+    panelEls.done.addEventListener('click', onPanelDone);
+    panelEls.skip.addEventListener('click', onPanelSkip);
+    shadow.getElementById('p-min').addEventListener('click', () => { widgetHost.style.display = 'none'; });
   }
 
-  function unmountWidget() {
-    if (widgetHost) {
-      widgetHost.remove();
-      widgetHost = null;
+  function updatePanel(view) {
+    if (!view) {
+      if (widgetHost) { widgetHost.remove(); widgetHost = null; panelEls = null; }
+      return;
+    }
+    if (!widgetHost) buildPanel();
+    widgetHost.style.display = '';
+
+    panelEls.hdr.textContent = view.mode === 'done'
+      ? 'All tasks complete' : `Task ${view.taskNum} of ${view.total}`;
+    panelEls.dot.style.display = view.mode === 'tracking' ? '' : 'none';
+
+    if (view.mode === 'done') {
+      panelEls.prompt.textContent = 'Thank you for participating.';
+      panelEls.hint.style.display = 'none';
+      panelEls.actions.style.display = 'none';
+      return;
+    }
+
+    panelEls.prompt.textContent = view.prompt || '';
+    if (view.mode === 'tracking') {
+      panelEls.hint.style.display = 'none';
+      panelEls.actions.style.display = '';
+    } else if (view.mode === 'reviewing') {
+      panelEls.hint.style.display = '';
+      panelEls.hint.textContent = 'Finish your notes in the review window.';
+      panelEls.actions.style.display = 'none';
+    } else { // idle
+      panelEls.hint.style.display = '';
+      panelEls.hint.innerHTML = 'Press <kbd>Alt+Shift+S</kbd> to begin';
+      panelEls.actions.style.display = 'none';
     }
   }
 
-  function onWidgetDone() {
-    if (!tracking) return;
-    chrome.runtime.sendMessage({ type: 'FINISH_TASK' });
-    stopTracking(); // flushes remaining interactions and removes the widget
+  function refreshPanel() {
+    chrome.storage.local.get(
+      ['participantId', 'tasks', 'currentTaskIndex', '_tracking', '_reviewing'],
+      (d) => {
+        if (chrome.runtime.lastError) return;
+        const active = !!(d.participantId && Array.isArray(d.tasks) && d.tasks.length);
+        if (!active) { updatePanel(null); return; }
+        const idx = d.currentTaskIndex || 0;
+        if (idx >= d.tasks.length) { updatePanel({ mode: 'done' }); return; }
+        const task = d.tasks[idx] || {};
+        const mode = d._tracking ? 'tracking' : (d._reviewing ? 'reviewing' : 'idle');
+        updatePanel({ mode, taskNum: idx + 1, total: d.tasks.length, prompt: task.task_prompt });
+      },
+    );
   }
 
-  function onWidgetSkip() {
+  function onPanelDone() {
+    if (!tracking) return;
+    chrome.runtime.sendMessage({ type: 'FINISH_TASK' });
+    stopTracking();
+  }
+
+  function onPanelSkip() {
     if (!tracking) return;
     chrome.runtime.sendMessage({ type: 'SKIP_TASK_FULL' });
     stopTracking();
@@ -250,7 +321,7 @@
 
     saveInterval = setInterval(flushToBackground, 10000);
 
-    mountWidget();
+    refreshPanel();
   }
 
   function flushToBackground() {
@@ -267,7 +338,6 @@
   function stopTracking() {
     if (!tracking) return;
     tracking = false;
-    unmountWidget();
     detachListeners();
     if (saveInterval) {
       clearInterval(saveInterval);
@@ -275,6 +345,7 @@
     }
     flushToBackground();
     chrome.storage.local.remove(['_tracking', '_originTime', '_viewStart']);
+    refreshPanel();
   }
 
   // Track SPA navigation
@@ -292,13 +363,23 @@
     if (tracking) record('navigate', null, { url: location.href, method: 'popstate' });
   });
 
-  // On page load, check if we should auto-resume tracking
+  // On page load, check if we should auto-resume tracking, and render the panel.
   chrome.storage.local.get(['_tracking', '_originTime', '_viewStart'], (data) => {
     if (data._tracking) {
       startTracking({
         originTime: data._originTime,
         viewStart: data._viewStart,
       });
+    }
+  });
+  refreshPanel();
+
+  // Keep the panel in sync as the study state changes (begin, done, skip, review).
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if ('participantId' in changes || 'tasks' in changes || 'currentTaskIndex' in changes
+      || '_tracking' in changes || '_reviewing' in changes) {
+      refreshPanel();
     }
   });
 
