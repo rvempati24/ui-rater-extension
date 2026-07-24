@@ -3,6 +3,8 @@
 // participant drop timestamped issue markers with optional notes, then submits the
 // markers + overall feedback and advances the study to the next task.
 
+const DEFAULT_SERVER = 'https://ui-rater-production.up.railway.app';
+
 const $ = (id) => document.getElementById(id);
 
 let markers = [];      // { id, ts_ms, note }
@@ -95,7 +97,7 @@ function setStatus(msg, kind) {
 
 async function loadContext() {
   const data = await chrome.storage.local.get([
-    'participantId', 'tasks', 'currentTaskIndex', '_viewStart', '_durationMs',
+    'participantId', 'serverUrl', 'tasks', 'currentTaskIndex', '_viewStart', '_durationMs',
   ]);
 
   if (!data.participantId || !Array.isArray(data.tasks)) {
@@ -106,6 +108,7 @@ async function loadContext() {
   const task = data.tasks[index];
   ctx = {
     participantId: data.participantId,
+    serverUrl: data.serverUrl || DEFAULT_SERVER,
     taskIndex: index + 1,
     total: data.tasks.length,
     promptText: task ? task.task_prompt : '',
@@ -117,25 +120,37 @@ async function loadContext() {
   $('taskPrompt').textContent = ctx.promptText || '';
 }
 
+function markVideoMissing() {
+  const video = $('video');
+  video.classList.add('hidden');
+  $('videoMissing').classList.remove('hidden');
+  $('flagBtn').disabled = true;
+  $('flagTime').textContent = '—';
+}
+
 async function loadVideo() {
-  const key = recordingKey(ctx.participantId, ctx.taskIndex);
+  const video = $('video');
+
+  // Fast path: the offscreen recorder may have stashed the blob locally.
   let blob = null;
   try {
-    blob = await getRecording(key);
+    blob = await getRecording(recordingKey(ctx.participantId, ctx.taskIndex));
   } catch (e) {
     console.warn('Failed to read recording from IndexedDB:', e);
   }
 
-  const video = $('video');
   if (blob) {
     videoUrl = URL.createObjectURL(blob);
     video.src = videoUrl;
-  } else {
-    video.classList.add('hidden');
-    $('videoMissing').classList.remove('hidden');
-    $('flagBtn').disabled = true;
-    $('flagTime').textContent = '—';
+    return;
   }
+
+  // Fall back to the copy the extension already uploaded to the server. If that
+  // load also fails, show the "recording unavailable" notice.
+  const serverSrc = `${ctx.serverUrl}/api/upload-recording`
+    + `?participantId=${encodeURIComponent(ctx.participantId)}&taskIndex=${ctx.taskIndex}`;
+  video.addEventListener('error', markVideoMissing, { once: true });
+  video.src = serverSrc;
 }
 
 async function submit() {
