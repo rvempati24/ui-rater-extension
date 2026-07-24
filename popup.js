@@ -154,13 +154,30 @@ $('startBtn').addEventListener('click', async () => {
   }
 });
 
-// Begin task — open site, start recording and tracking
+// Tab URLs that Chrome refuses to tab-capture. Recording must start on a normal
+// web page while the extension's activeTab grant is valid.
+function isCapturableUrl(url) {
+  return /^https?:\/\//i.test(url || '');
+}
+
+// Begin task — start recording on the current tab, then open the site
 $('beginTaskBtn').addEventListener('click', async () => {
   const task = state.tasks[state.currentTaskIndex];
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+  // We must capture the currently-active tab (the one the extension was invoked
+  // on) before navigating. If it's a chrome:// or extension page, capture is
+  // impossible — ask the participant to move to a normal tab first.
+  if (!isCapturableUrl(tab.url)) {
+    showError('taskError', 'Open a normal website tab first (not a Chrome or extension page), then click Begin Task.');
+    return;
+  }
+
   const now = Date.now();
   const viewStart = new Date().toISOString();
 
-  // Persist tracking state BEFORE navigating
+  // Persist tracking state BEFORE navigating so the content script auto-resumes.
   await chrome.storage.local.set({
     _tracking: true,
     _originTime: now,
@@ -169,15 +186,12 @@ $('beginTaskBtn').addEventListener('click', async () => {
 
   chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
 
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-
   showDuringTrack();
 
-  // Background navigates to the task site (if any) and then starts recording, so
-  // capture always runs on the real page instead of a restricted/extension tab.
+  // Start tab video recording on the current (capturable, invoked) tab.
   const res = await new Promise((resolve) => {
     chrome.runtime.sendMessage(
-      { type: 'BEGIN_TASK', tabId: tab.id, siteUrl: task.site_url || '' },
+      { type: 'BEGIN_TASK', tabId: tab.id },
       (r) => resolve(chrome.runtime.lastError ? null : r),
     );
   });
@@ -189,8 +203,11 @@ $('beginTaskBtn').addEventListener('click', async () => {
     );
   }
 
-  if (!task.site_url) {
-    // No navigation happened, so make sure the content script is tracking.
+  // Now navigate to the task site (capture persists across navigation), or start
+  // tracking in place when the task runs on the current page.
+  if (task.site_url) {
+    await chrome.tabs.update(tab.id, { url: task.site_url });
+  } else {
     chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' }, () => {
       if (chrome.runtime.lastError) {
         chrome.scripting.executeScript({
@@ -234,13 +251,19 @@ $('doneBtn').addEventListener('click', async () => {
       chrome.runtime.sendMessage({ type: 'SNAPSHOT_AND_STOP_RECORDING' }, resolve);
     });
 
-    // Open the full-tab review & annotation editor. The editor owns task
+    // Open the review & annotation editor in its OWN window (not a tab). A tab
+    // would become the active tab and steal the activeTab capture grant from the
+    // task tab, breaking recording for the next task. The editor owns task
     // completion (feedback + timestamped issue markers) for this attempt.
     try {
-      await chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
-      window.close();
+      await chrome.windows.create({
+        url: chrome.runtime.getURL('editor.html'),
+        type: 'popup',
+        width: 1100,
+        height: 900,
+      });
     } catch {
-      // Fallback: if the editor tab can't open, use the inline feedback screen.
+      // Fallback: if the editor window can't open, use the inline feedback screen.
       showFeedback();
     }
   } catch (err) {
@@ -335,6 +358,15 @@ $('resetBtn').addEventListener('click', resetStudy);
 $('headerResetBtn').addEventListener('click', async () => {
   if (confirm('Reset the study? This will return you to the setup screen.')) {
     resetStudy();
+  }
+});
+
+// Keep the persistent side panel in sync when the editor window advances the
+// task (it updates currentTaskIndex and clears the tracking flag from storage).
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if ('currentTaskIndex' in changes || 'tasks' in changes || 'participantId' in changes) {
+    init();
   }
 });
 

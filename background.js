@@ -16,28 +16,6 @@ async function ensureOffscreen() {
   }
 }
 
-// Navigate a tab to a URL and resolve once it finishes loading (or after a
-// timeout). Used so recording starts on the real task page rather than whatever
-// happened to be active (e.g. the extension's own editor tab, which cannot be
-// tab-captured).
-function navigateAndWait(tabId, url) {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      chrome.tabs.onUpdated.removeListener(listener);
-      resolve();
-    };
-    const listener = (id, info) => {
-      if (id === tabId && info.status === 'complete') finish();
-    };
-    chrome.tabs.onUpdated.addListener(listener);
-    chrome.tabs.update(tabId, { url }, () => { /* lastError handled by timeout */ });
-    setTimeout(finish, 15000);
-  });
-}
-
 async function startRecording(tabId) {
   await ensureOffscreen();
   const streamId = await new Promise((resolve, reject) => {
@@ -104,10 +82,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'BEGIN_TASK') {
     (async () => {
       try {
-        // Navigate to the task site first so capture runs on a real web page.
-        if (msg.siteUrl) {
-          await navigateAndWait(msg.tabId, msg.siteUrl);
-        }
+        // Capture must happen while the activeTab grant is still valid for this
+        // page, i.e. before any navigation (navigation revokes the grant).
         await startRecording(msg.tabId);
         sendResponse({ ok: true });
       } catch (err) {

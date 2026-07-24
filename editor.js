@@ -198,11 +198,13 @@ function showDone(finished) {
   banner.classList.remove('hidden');
   if (finished) {
     $('doneTitle').textContent = 'All tasks complete!';
-    $('doneText').textContent = 'Thank you for participating. You can close this tab.';
+    $('doneText').textContent = 'Thank you for participating. This window will close automatically.';
   } else {
     $('doneTitle').textContent = 'Saved.';
-    $('doneText').textContent = 'Open the UI Rater extension to start your next task. You can close this tab.';
+    $('doneText').textContent = 'Returning to the study — this window will close automatically.';
   }
+  // Close the editor window; the side panel auto-advances to the next task.
+  setTimeout(() => window.close(), 1600);
 }
 
 function wireEvents() {
