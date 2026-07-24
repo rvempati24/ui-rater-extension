@@ -171,17 +171,27 @@ $('beginTaskBtn').addEventListener('click', async () => {
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-  // Start tab video recording
-  chrome.runtime.sendMessage({ type: 'BEGIN_TASK', tabId: tab.id }, (res) => {
-    if (chrome.runtime.lastError || !res?.ok) {
-      console.warn('Recording failed to start:', res?.error || chrome.runtime.lastError?.message);
-    }
+  showDuringTrack();
+
+  // Background navigates to the task site (if any) and then starts recording, so
+  // capture always runs on the real page instead of a restricted/extension tab.
+  const res = await new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { type: 'BEGIN_TASK', tabId: tab.id, siteUrl: task.site_url || '' },
+      (r) => resolve(chrome.runtime.lastError ? null : r),
+    );
   });
 
-  if (task.site_url) {
-    await chrome.tabs.update(tab.id, { url: task.site_url });
-  } else {
-    chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' }, (res) => {
+  if (!res?.ok) {
+    showError(
+      'taskError',
+      `Screen recording could not start${res?.error ? `: ${res.error}` : ''}. Your interactions are still being tracked.`,
+    );
+  }
+
+  if (!task.site_url) {
+    // No navigation happened, so make sure the content script is tracking.
+    chrome.tabs.sendMessage(tab.id, { type: 'START_TRACKING' }, () => {
       if (chrome.runtime.lastError) {
         chrome.scripting.executeScript({
           target: { tabId: tab.id },
@@ -192,8 +202,6 @@ $('beginTaskBtn').addEventListener('click', async () => {
       }
     });
   }
-
-  showDuringTrack();
 });
 
 // Done — stop tracking, snapshot interactions, stop recording, then show feedback
