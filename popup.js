@@ -221,54 +221,20 @@ $('beginTaskBtn').addEventListener('click', async () => {
   }
 });
 
-// Done — stop tracking, snapshot interactions, stop recording, then show feedback
+// Done — hand off to the background, which stops tracking + recording and opens
+// the review/annotation editor window (same path the on-page Done control uses).
 $('doneBtn').addEventListener('click', async () => {
   $('doneBtn').disabled = true;
   $('doneBtn').textContent = 'Stopping…';
 
-  try {
-    // Tell content script to flush remaining interactions and stop
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    try {
-      await new Promise((resolve) => {
-        chrome.tabs.sendMessage(tab.id, { type: 'STOP_TRACKING' }, () => resolve());
-        setTimeout(resolve, 1000);
-      });
-    } catch { /* content script may be on a different page */ }
+  const res = await new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: 'FINISH_TASK' }, (r) => resolve(chrome.runtime.lastError ? null : r));
+  });
 
-    // Small delay to let the flush arrive at background
-    await new Promise(r => setTimeout(r, 300));
-
-    // Snapshot timing now (before user spends time on feedback)
-    const stored = await chrome.storage.local.get(['_viewStart']);
-    const viewStart = stored._viewStart || new Date().toISOString();
-    const durationMs = Date.now() - new Date(viewStart).getTime();
-    await chrome.storage.local.set({ _durationMs: durationMs, _viewStart: viewStart });
-
-    // Snapshot interactions and stop recording now, before the review step.
-    // The recording is also stashed to IndexedDB so the editor tab can play it.
-    await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: 'SNAPSHOT_AND_STOP_RECORDING' }, resolve);
-    });
-
-    // Open the review & annotation editor in its OWN window (not a tab). A tab
-    // would become the active tab and steal the activeTab capture grant from the
-    // task tab, breaking recording for the next task. The editor owns task
-    // completion (feedback + timestamped issue markers) for this attempt.
-    try {
-      await chrome.windows.create({
-        url: chrome.runtime.getURL('editor.html'),
-        type: 'popup',
-        width: 1100,
-        height: 900,
-      });
-    } catch {
-      // Fallback: if the editor window can't open, use the inline feedback screen.
-      showFeedback();
-    }
-  } catch (err) {
-    showError('taskError', err.message);
-  } finally {
+  if (res?.ok) {
+    window.close();
+  } else {
+    showError('taskError', res?.error || 'Failed to finish the task.');
     $('doneBtn').disabled = false;
     $('doneBtn').textContent = 'Done';
   }
@@ -322,20 +288,18 @@ $('skipFeedbackBtn').addEventListener('click', () => {
   submitTaskWithFeedback('');
 });
 
-// Skip task
+// Skip task — background stops recording and advances to the next task.
 $('skipBtn').addEventListener('click', async () => {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  try {
-    chrome.tabs.sendMessage(tab.id, { type: 'STOP_TRACKING' });
-  } catch { /* ignore */ }
-  chrome.runtime.sendMessage({ type: 'SKIP_TASK' });
-  chrome.runtime.sendMessage({ type: 'CLEAR_INTERACTIONS' });
-  await chrome.storage.local.remove(['_tracking', '_originTime', '_viewStart', '_durationMs', '_snapshotInteractions']);
+  $('skipBtn').disabled = true;
+  const res = await new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: 'SKIP_TASK_FULL' }, (r) => resolve(chrome.runtime.lastError ? null : r));
+  });
+  $('skipBtn').disabled = false;
 
-  state.currentTaskIndex++;
-  await chrome.storage.local.set({ currentTaskIndex: state.currentTaskIndex });
+  const data = await chrome.storage.local.get(['currentTaskIndex']);
+  state.currentTaskIndex = data.currentTaskIndex ?? (state.currentTaskIndex + 1);
 
-  if (state.currentTaskIndex >= state.tasks.length) {
+  if (res?.finished || state.currentTaskIndex >= state.tasks.length) {
     showDone();
   } else {
     showTask();

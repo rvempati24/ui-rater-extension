@@ -50,6 +50,28 @@ async function stopRecording(serverUrl, participantId, taskIndex) {
   });
 }
 
+// Fire-and-resolve a message to a content script; never rejects.
+function sendToTab(tabId, message) {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.sendMessage(tabId, message, () => { void chrome.runtime.lastError; resolve(); });
+    } catch {
+      resolve();
+    }
+  });
+}
+
+// Persist the in-memory interactions and stop + upload the recording for the
+// current task. Shared by the popup and the on-page Done control.
+async function snapshotAndStopRecording() {
+  await chrome.storage.local.set({ _snapshotInteractions: [...collectedInteractions] });
+  collectedInteractions = [];
+  const data = await chrome.storage.local.get(['serverUrl', 'participantId', 'currentTaskIndex']);
+  const serverUrl = data.serverUrl || DEFAULT_SERVER;
+  const taskIndex = (data.currentTaskIndex || 0) + 1;
+  await stopRecording(serverUrl, data.participantId, taskIndex);
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'GET_STATE') {
     chrome.storage.local.get(['participantId', 'serverUrl', 'tasks', 'currentTaskIndex'], (data) => {
@@ -96,17 +118,73 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'SNAPSHOT_AND_STOP_RECORDING') {
     (async () => {
       try {
-        // Save interactions to storage so they survive service worker restart
-        await chrome.storage.local.set({ _snapshotInteractions: [...collectedInteractions] });
-        collectedInteractions = [];
+        await snapshotAndStopRecording();
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
+  }
 
-        // Stop recording and upload video now
-        const data = await chrome.storage.local.get(['serverUrl', 'participantId', 'currentTaskIndex']);
-        const serverUrl = data.serverUrl || DEFAULT_SERVER;
-        const taskIndex = (data.currentTaskIndex || 0) + 1;
-        await stopRecording(serverUrl, data.participantId, taskIndex);
+  // Finish the current task: stop tracking, snapshot timing + interactions, stop
+  // the recording, then open the review/annotation editor. Triggered by the
+  // on-page Done control or the popup's Done button.
+  if (msg.type === 'FINISH_TASK') {
+    (async () => {
+      try {
+        let tabId = recordingTabId;
+        if (tabId == null) {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          tabId = tab?.id;
+        }
+        if (tabId != null) await sendToTab(tabId, { type: 'STOP_TRACKING' });
+        await new Promise((r) => setTimeout(r, 300)); // let the final flush arrive
+
+        const stored = await chrome.storage.local.get(['_viewStart']);
+        const viewStart = stored._viewStart || new Date().toISOString();
+        const durationMs = Date.now() - new Date(viewStart).getTime();
+        await chrome.storage.local.set({ _durationMs: durationMs, _viewStart: viewStart });
+
+        await snapshotAndStopRecording();
+
+        await chrome.windows.create({
+          url: chrome.runtime.getURL('editor.html'),
+          type: 'popup',
+          width: 1100,
+          height: 900,
+        });
 
         sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  // Skip the current task entirely: stop recording, advance to the next task.
+  if (msg.type === 'SKIP_TASK_FULL') {
+    (async () => {
+      try {
+        let tabId = recordingTabId;
+        if (tabId == null) {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          tabId = tab?.id;
+        }
+        if (tabId != null) await sendToTab(tabId, { type: 'STOP_TRACKING' });
+
+        const data = await chrome.storage.local.get(['serverUrl', 'participantId', 'currentTaskIndex', 'tasks']);
+        const taskIndex = (data.currentTaskIndex || 0) + 1;
+        await stopRecording(data.serverUrl || DEFAULT_SERVER, data.participantId, taskIndex);
+        collectedInteractions = [];
+
+        const advanced = (data.currentTaskIndex || 0) + 1;
+        const total = data.tasks?.length || 0;
+        await chrome.storage.local.set({ currentTaskIndex: advanced });
+        await chrome.storage.local.remove(['_tracking', '_originTime', '_viewStart', '_durationMs', '_snapshotInteractions']);
+
+        sendResponse({ ok: true, finished: advanced >= total });
       } catch (err) {
         sendResponse({ ok: false, error: err.message });
       }
@@ -183,10 +261,3 @@ chrome.runtime.onInstalled.addListener(() => {
     }
   });
 });
-
-// Clicking the toolbar icon opens the persistent side panel (instead of a popup
-// that closes whenever the participant clicks back onto the task page).
-if (chrome.sidePanel?.setPanelBehavior) {
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
-    .catch((err) => console.warn('Failed to set side panel behavior:', err));
-}

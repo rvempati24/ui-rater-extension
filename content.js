@@ -5,6 +5,9 @@
   let viewStart = '';
   let saveInterval = null;
 
+  const WIDGET_ID = '__ui_rater_widget__';
+  let widgetHost = null;
+
   function ts() {
     return Date.now() - originTime;
   }
@@ -21,6 +24,7 @@
 
   function record(kind, e, extra) {
     if (!tracking) return;
+    if (e && e.target && e.target.id === WIDGET_ID) return; // ignore our own control
     const entry = {
       kind,
       ts: ts(),
@@ -161,6 +165,66 @@
     window.removeEventListener('resize', onResizeThrottled);
   }
 
+  // On-page control so the participant can end a task without reopening the
+  // toolbar popup. Rendered in a shadow root so page CSS can't affect it.
+  function mountWidget() {
+    if (widgetHost) return;
+    const root = document.body || document.documentElement;
+    if (!root) return;
+
+    widgetHost = document.createElement('div');
+    widgetHost.id = WIDGET_ID;
+    const shadow = widgetHost.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `
+      <style>
+        .bar {
+          position: fixed; bottom: 16px; right: 16px; z-index: 2147483647;
+          display: flex; align-items: center; gap: 10px;
+          background: #111827; color: #fff; padding: 8px 10px 8px 14px;
+          border-radius: 999px; box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+          font: 500 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        .dot { width: 9px; height: 9px; border-radius: 50%; background: #ef4444;
+          animation: p 1.4s infinite; }
+        @keyframes p { 0%,100%{opacity:1} 50%{opacity:.35} }
+        .lbl { margin-right: 4px; white-space: nowrap; }
+        button { border: none; border-radius: 999px; padding: 7px 14px;
+          font: 600 13px inherit; cursor: pointer; }
+        .done { background: #16a34a; color: #fff; }
+        .done:hover { background: #15803d; }
+        .skip { background: #374151; color: #e5e7eb; }
+        .skip:hover { background: #4b5563; }
+      </style>
+      <div class="bar">
+        <span class="dot"></span>
+        <span class="lbl">Recording task</span>
+        <button class="done" id="w-done">Done</button>
+        <button class="skip" id="w-skip">Skip</button>
+      </div>`;
+    root.appendChild(widgetHost);
+    shadow.getElementById('w-done').addEventListener('click', onWidgetDone);
+    shadow.getElementById('w-skip').addEventListener('click', onWidgetSkip);
+  }
+
+  function unmountWidget() {
+    if (widgetHost) {
+      widgetHost.remove();
+      widgetHost = null;
+    }
+  }
+
+  function onWidgetDone() {
+    if (!tracking) return;
+    chrome.runtime.sendMessage({ type: 'FINISH_TASK' });
+    stopTracking(); // flushes remaining interactions and removes the widget
+  }
+
+  function onWidgetSkip() {
+    if (!tracking) return;
+    chrome.runtime.sendMessage({ type: 'SKIP_TASK_FULL' });
+    stopTracking();
+  }
+
   function startTracking(resumeState) {
     if (tracking) return;
     tracking = true;
@@ -185,6 +249,8 @@
     });
 
     saveInterval = setInterval(flushToBackground, 10000);
+
+    mountWidget();
   }
 
   function flushToBackground() {
@@ -201,6 +267,7 @@
   function stopTracking() {
     if (!tracking) return;
     tracking = false;
+    unmountWidget();
     detachListeners();
     if (saveInterval) {
       clearInterval(saveInterval);
