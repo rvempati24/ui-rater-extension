@@ -181,3 +181,10 @@ chrome.runtime.onInstalled.addListener(() => {
     }
   });
 });
+
+// Clicking the toolbar icon opens the persistent side panel (instead of a popup
+// that closes whenever the participant clicks back onto the task page).
+if (chrome.sidePanel?.setPanelBehavior) {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
+    .catch((err) => console.warn('Failed to set side panel behavior:', err));
+}

@@ -3,15 +3,17 @@
   "name": "UI Rater - Task Tracker",
   "version": "1.1.0",
   "description": "Tracks user interactions and records video on real websites for the UI task completion study",
-  "permissions": ["storage", "activeTab", "scripting", "tabs", "tabCapture", "offscreen"],
+  "permissions": ["storage", "activeTab", "scripting", "tabs", "tabCapture", "offscreen", "sidePanel"],
   "host_permissions": ["<all_urls>"],
   "action": {
-    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }
+  },
+  "side_panel": {
+    "default_path": "popup.html"
   },
   "background": {
     "service_worker": "background.js"
